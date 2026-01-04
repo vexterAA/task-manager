@@ -48,7 +48,7 @@ func Load() Config {
 		Env:             env,
 		HTTPAddr:        addr,
 		Storage:         storage,
-		DBDriver:        getenv("DB_DRIVER", "postgres"),
+		DBDriver:        getenv("DB_DRIVER", "pgx"),
 		DBDSN:           getenv("DB_DSN", ""),
 		ShutdownTimeout: getdur("SHUTDOWN_TIMEOUT", 5*time.Second),
 	}

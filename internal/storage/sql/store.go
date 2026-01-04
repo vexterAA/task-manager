@@ -3,6 +3,8 @@ package sqlstore
 import (
 	"database/sql"
 	"errors"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type Store struct {
