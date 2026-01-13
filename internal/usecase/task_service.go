@@ -160,6 +160,11 @@ func locationFromTZ(tz string) (*time.Location, error) {
 	return nil, ErrInvalidTimezone
 }
 
+// LocationFromTZ exposes timezone parsing for other layers (e.g. bot input parsing).
+func LocationFromTZ(tz string) (*time.Location, error) {
+	return locationFromTZ(tz)
+}
+
 func parseOffsetLocation(tz string) (*time.Location, bool) {
 	if len(tz) != 6 || (tz[0] != '+' && tz[0] != '-') || tz[3] != ':' {
 		return nil, false

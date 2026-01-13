@@ -50,6 +50,17 @@ func (s *Store) CreateUser(u domain.User) (domain.User, error) {
 	return u, nil
 }
 
+func (s *Store) GetByTelegramID(telegramUserID int64) (domain.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, u := range s.users {
+		if u.TelegramUserID == telegramUserID {
+			return u, nil
+		}
+	}
+	return domain.User{}, storage.ErrNotFound
+}
+
 func (s *Store) ListTasks(userID int64, status string) ([]domain.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

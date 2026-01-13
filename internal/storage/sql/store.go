@@ -101,6 +101,26 @@ func (s *Store) CreateUser(u domain.User) (domain.User, error) {
 	return u, nil
 }
 
+func (s *Store) GetByTelegramID(telegramUserID int64) (domain.User, error) {
+	if s.db == nil {
+		return domain.User{}, errors.New("db")
+	}
+	var u domain.User
+	row := s.db.QueryRow(`
+		select id, telegram_user_id, chat_id, timezone, created_at
+		from users
+		where telegram_user_id = $1`,
+		telegramUserID,
+	)
+	if err := row.Scan(&u.ID, &u.TelegramUserID, &u.ChatID, &u.Timezone, &u.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.User{}, storage.ErrNotFound
+		}
+		return domain.User{}, err
+	}
+	return u, nil
+}
+
 func (s *Store) ListTasks(userID int64, status string) ([]domain.Task, error) {
 	if s.db == nil {
 		return nil, errors.New("db")

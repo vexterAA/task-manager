@@ -14,6 +14,8 @@ type Config struct {
 	DBDriver        string
 	DBDSN           string
 	ShutdownTimeout time.Duration
+	TelegramToken   string
+	TelegramPoll    time.Duration
 }
 
 func getenv(key, def string) string {
@@ -51,6 +53,8 @@ func Load() Config {
 		DBDriver:        getenv("DB_DRIVER", "pgx"),
 		DBDSN:           getenv("DB_DSN", ""),
 		ShutdownTimeout: getdur("SHUTDOWN_TIMEOUT", 5*time.Second),
+		TelegramToken:   getenv("TELEGRAM_TOKEN", ""),
+		TelegramPoll:    getdur("TELEGRAM_POLL_TIMEOUT", 20*time.Second),
 	}
 }
 
