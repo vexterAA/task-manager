@@ -31,6 +31,7 @@ type taskScanner interface {
 func scanTask(scanner taskScanner) (domain.Task, error) {
 	var t domain.Task
 	var dueAt, remindAt, notifiedAt sql.NullTime
+	var forwardMeta []byte
 	if err := scanner.Scan(
 		&t.ID,
 		&t.UserID,
@@ -39,6 +40,7 @@ func scanTask(scanner taskScanner) (domain.Task, error) {
 		&dueAt,
 		&remindAt,
 		&notifiedAt,
+		&forwardMeta,
 		&t.CreatedAt,
 		&t.UpdatedAt,
 	); err != nil {
@@ -52,6 +54,9 @@ func scanTask(scanner taskScanner) (domain.Task, error) {
 	}
 	if notifiedAt.Valid {
 		t.NotifiedAt = &notifiedAt.Time
+	}
+	if len(forwardMeta) > 0 {
+		t.ForwardMeta = forwardMeta
 	}
 	return t, nil
 }
@@ -175,7 +180,7 @@ func (s *Store) ListTasks(userID int64, status string) ([]domain.Task, error) {
 	var err error
 	if status == "" {
 		rows, err = s.db.Query(`
-			select id, user_id, text, status, due_at, remind_at, notified_at, created_at, updated_at
+			select id, user_id, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at
 			from tasks
 			where user_id = $1
 			order by id`,
@@ -183,7 +188,7 @@ func (s *Store) ListTasks(userID int64, status string) ([]domain.Task, error) {
 		)
 	} else {
 		rows, err = s.db.Query(`
-			select id, user_id, text, status, due_at, remind_at, notified_at, created_at, updated_at
+			select id, user_id, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at
 			from tasks
 			where user_id = $1 and status = $2
 			order by id`,
@@ -215,7 +220,7 @@ func (s *Store) GetTask(id int64) (domain.Task, error) {
 		return domain.Task{}, errors.New("db")
 	}
 	row := s.db.QueryRow(`
-		select id, user_id, text, status, due_at, remind_at, notified_at, created_at, updated_at
+		select id, user_id, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at
 		from tasks
 		where id = $1`,
 		id,
@@ -242,8 +247,8 @@ func (s *Store) CreateTask(t domain.Task) (domain.Task, error) {
 		t.Status = domain.TaskStatusActive
 	}
 	row := s.db.QueryRow(`
-		insert into tasks(user_id, text, status, due_at, remind_at, notified_at)
-		values ($1, $2, $3, $4, $5, $6)
+		insert into tasks(user_id, text, status, due_at, remind_at, notified_at, forward_meta)
+		values ($1, $2, $3, $4, $5, $6, $7)
 		returning id, created_at, updated_at`,
 		t.UserID,
 		t.Text,
@@ -251,6 +256,7 @@ func (s *Store) CreateTask(t domain.Task) (domain.Task, error) {
 		t.DueAt,
 		t.RemindAt,
 		t.NotifiedAt,
+		t.ForwardMeta,
 	)
 	if err := row.Scan(&t.ID, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		var pgErr *pgconn.PgError
@@ -275,7 +281,7 @@ func (s *Store) MarkDone(id int64) (domain.Task, error) {
 		set status = $1,
 			updated_at = now()
 		where id = $2
-		returning id, user_id, text, status, due_at, remind_at, notified_at, created_at, updated_at`,
+		returning id, user_id, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at`,
 		domain.TaskStatusDone,
 		id,
 	)
@@ -298,7 +304,7 @@ func (s *Store) SetDue(id int64, dueAt *time.Time) (domain.Task, error) {
 		set due_at = $1,
 			updated_at = now()
 		where id = $2
-		returning id, user_id, text, status, due_at, remind_at, notified_at, created_at, updated_at`,
+		returning id, user_id, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at`,
 		dueAt,
 		id,
 	)
@@ -322,7 +328,7 @@ func (s *Store) SetRemind(id int64, remindAt *time.Time) (domain.Task, error) {
 			notified_at = null,
 			updated_at = now()
 		where id = $2
-		returning id, user_id, text, status, due_at, remind_at, notified_at, created_at, updated_at`,
+		returning id, user_id, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at`,
 		remindAt,
 		id,
 	)
@@ -378,7 +384,7 @@ func (s *Store) ListDueForNotify(now time.Time) ([]domain.Task, error) {
 			and remind_at is not null
 			and remind_at <= $1
 			and notified_at is null
-		returning id, user_id, text, status, due_at, remind_at, notified_at, created_at, updated_at`,
+		returning id, user_id, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at`,
 		now,
 		domain.TaskStatusActive,
 	)
@@ -417,4 +423,75 @@ func (s *Store) DeleteTask(id int64) error {
 
 func (s *Store) Delete(id int64) error {
 	return s.DeleteTask(id)
+}
+
+func (s *Store) CreateAttachment(a domain.Attachment) (domain.Attachment, error) {
+	if s.db == nil {
+		return domain.Attachment{}, errors.New("db")
+	}
+	row := s.db.QueryRow(`
+		insert into attachments(task_id, type, telegram_file_id, file_unique_id, caption, mime_type, file_name, file_size)
+		values ($1, $2, $3, $4, $5, $6, $7, $8)
+		returning id`,
+		a.TaskID,
+		a.Type,
+		a.TelegramFileID,
+		a.FileUniqueID,
+		a.Caption,
+		a.MimeType,
+		a.FileName,
+		a.FileSize,
+	)
+	if err := row.Scan(&a.ID); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return domain.Attachment{}, storage.ErrNotFound
+		}
+		return domain.Attachment{}, err
+	}
+	return a, nil
+}
+
+func (s *Store) ListAttachmentsByTaskID(taskID int64) ([]domain.Attachment, error) {
+	if s.db == nil {
+		return nil, errors.New("db")
+	}
+	rows, err := s.db.Query(`
+		select id, task_id, type, telegram_file_id, file_unique_id, caption, mime_type, file_name, file_size
+		from attachments
+		where task_id = $1
+		order by id`,
+		taskID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var res []domain.Attachment
+	for rows.Next() {
+		var a domain.Attachment
+		if err := rows.Scan(
+			&a.ID,
+			&a.TaskID,
+			&a.Type,
+			&a.TelegramFileID,
+			&a.FileUniqueID,
+			&a.Caption,
+			&a.MimeType,
+			&a.FileName,
+			&a.FileSize,
+		); err != nil {
+			return nil, err
+		}
+		res = append(res, a)
+	}
+	return res, rows.Err()
+}
+
+func (s *Store) DeleteAttachmentsByTaskID(taskID int64) error {
+	if s.db == nil {
+		return errors.New("db")
+	}
+	_, err := s.db.Exec(`delete from attachments where task_id = $1`, taskID)
+	return err
 }

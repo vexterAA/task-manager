@@ -15,6 +15,7 @@ type Store interface {
 	repository.TaskRepository
 	repository.UserRepository
 	repository.SessionRepository
+	repository.AttachmentRepository
 }
 
 type App struct {

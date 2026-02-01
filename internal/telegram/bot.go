@@ -18,15 +18,17 @@ type Bot struct {
 	taskService *usecase.TaskService
 	users       repository.UserRepository
 	sessions    repository.SessionRepository
+	attachments repository.AttachmentRepository
 	pollTimeout time.Duration
 }
 
-func NewBot(token string, taskService *usecase.TaskService, users repository.UserRepository, sessions repository.SessionRepository, pollTimeout time.Duration) *Bot {
+func NewBot(token string, taskService *usecase.TaskService, users repository.UserRepository, sessions repository.SessionRepository, attachments repository.AttachmentRepository, pollTimeout time.Duration) *Bot {
 	return &Bot{
 		client:      NewClient(token),
 		taskService: taskService,
 		users:       users,
 		sessions:    sessions,
+		attachments: attachments,
 		pollTimeout: pollTimeout,
 	}
 }
@@ -48,16 +50,16 @@ func (b *Bot) Run(ctx context.Context) error {
 		}
 		for _, upd := range updates {
 			offset = upd.UpdateID + 1
-			if upd.Message == nil || upd.Message.Text == "" {
-				if upd.CallbackQuery != nil {
-					if err := b.handleCallback(ctx, upd.CallbackQuery); err != nil {
-						log.Printf("telegram callback error: %v", err)
-					}
+			if upd.Message != nil {
+				if err := b.handleMessage(ctx, upd.Message); err != nil {
+					log.Printf("telegram handle message error: %v", err)
 				}
 				continue
 			}
-			if err := b.handleMessage(ctx, upd.Message); err != nil {
-				log.Printf("telegram handle message error: %v", err)
+			if upd.CallbackQuery != nil {
+				if err := b.handleCallback(ctx, upd.CallbackQuery); err != nil {
+					log.Printf("telegram callback error: %v", err)
+				}
 			}
 		}
 	}
@@ -101,10 +103,14 @@ func (b *Bot) handleMessage(ctx context.Context, msg *Message) error {
 			return b.sendMenuText(ctx, msg.Chat.ID, "Не смог получить список задач.")
 		}
 		if len(items) == 0 {
-			return b.sendMenuText(ctx, msg.Chat.ID, "Пока пусто. Добавь задачу через /add.")
+			return b.sendMenuText(ctx, msg.Chat.ID, "Пока пусто. Жми «Создать задачу» в меню.")
 		}
 		for _, t := range items {
-			text := formatTaskLine(t)
+			attachments, err := b.attachments.ListAttachmentsByTaskID(t.ID)
+			if err != nil {
+				return err
+			}
+			text := formatTaskLineWithAttachments(t, len(attachments))
 			if err := b.client.SendMessageWithMarkup(ctx, msg.Chat.ID, text, taskInlineKeyboard(t.ID)); err != nil {
 				return err
 			}
@@ -119,7 +125,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *Message) error {
 	case "due":
 		id, dueAt, err := parseDueArgs(args, tz)
 		if err != nil {
-			return b.sendMenuText(ctx, msg.Chat.ID, "Формат: /due <id> <YYYY-MM-DD HH:MM>")
+			return b.sendMenuText(ctx, msg.Chat.ID, "Не понял. Пример: 12 2026-02-01 18:00")
 		}
 		if err := b.ensureTaskOwner(id, user.ID, tz); err != nil {
 			return b.sendMenuText(ctx, msg.Chat.ID, "Задача не найдена.")
@@ -133,7 +139,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *Message) error {
 		}
 		return b.sendMenuText(ctx, msg.Chat.ID, fmt.Sprintf("Срок для #%d: %s.", task.ID, formatTime(dueAt)))
 	default:
-		return b.sendMenuText(ctx, msg.Chat.ID, "Не понял команду. /start покажет хелп.")
+		return b.sendMenuText(ctx, msg.Chat.ID, "Не понял. Жми кнопки в меню.")
 	}
 }
 
@@ -186,6 +192,28 @@ func (b *Bot) handleCallback(ctx context.Context, cb *CallbackQuery) error {
 		return nil
 	case "snooze":
 		_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "Snooze пока не готов.")
+		return nil
+	case "att":
+		_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+		items, err := b.attachments.ListAttachmentsByTaskID(id)
+		if err != nil {
+			return err
+		}
+		if len(items) == 0 {
+			return b.client.SendMessage(ctx, cb.Message.Chat.ID, "Вложений нет.")
+		}
+		for _, a := range items {
+			switch a.Type {
+			case "photo":
+				if err := b.client.SendPhoto(ctx, cb.Message.Chat.ID, a.TelegramFileID, a.Caption); err != nil {
+					return err
+				}
+			default:
+				if err := b.client.SendDocument(ctx, cb.Message.Chat.ID, a.TelegramFileID, a.Caption); err != nil {
+					return err
+				}
+			}
+		}
 		return nil
 	default:
 		return b.client.AnswerCallbackQuery(ctx, cb.ID, "")

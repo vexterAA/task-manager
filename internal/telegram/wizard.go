@@ -21,39 +21,70 @@ func (b *Bot) startWizard(ctx context.Context, user domain.User, chatID int64) e
 	if err := b.saveSession(session, draft); err != nil {
 		return err
 	}
-	return b.client.SendMessageWithMarkup(ctx, chatID, "Напиши текст задачи.", &ForceReply{
+	return b.client.SendMessageWithMarkup(ctx, chatID, "Отправь текст, пересланный пост или файл/картинку.", &ForceReply{
 		ForceReply:            true,
-		InputFieldPlaceholder: "Текст задачи",
+		InputFieldPlaceholder: "Текст задачи / пересланный пост / файл",
 	})
 }
 
 func (b *Bot) handleWizardMessage(ctx context.Context, msg *Message, user domain.User, tz string, session domain.UserSession, draft taskDraft) error {
 	switch session.State {
 	case domain.SessionStateCreateText:
-		text := strings.TrimSpace(msg.Text)
-		if text == "" {
-			return b.sendMenuText(ctx, msg.Chat.ID, "Текст пустой. Напиши задачу нормально.")
+		content, ok := extractWizardContent(msg)
+		if !ok {
+			return b.sendMenuText(ctx, msg.Chat.ID, "Пришли текст, пересланный пост или файл/картинку.")
 		}
-		draft.Text = text
+		if content.text != "" {
+			draft.Text = content.text
+		}
+		if content.attachmentsFound {
+			draft.Attachments = content.attachments
+		}
+		if content.forwardFound {
+			draft.ForwardMeta = content.forwardMeta
+		}
+		if draft.Text == "" {
+			draft.Text = "Вложение без текста"
+		}
 		session.State = domain.SessionStateCreateDeadline
 		if err := b.saveSession(session, draft); err != nil {
 			return err
 		}
 		return b.sendMenuWithInline(ctx, msg.Chat.ID, "Нужен дедлайн?", deadlineInlineKeyboard())
 	case domain.SessionStateCreateDeadline:
-		if draft.PendingInput != "deadline" {
+		switch draft.PendingInput {
+		case "deadline":
+			dt, noDeadline, err := parseFlexibleDateTime(msg.Text, tz)
+			if err != nil {
+				return b.sendMenuText(ctx, msg.Chat.ID, "Не понял дату. Примеры: сегодня 18:30, завтра 9, через 2ч, 12.02 18:00")
+			}
+			if noDeadline {
+				draft.Deadline = nil
+			} else {
+				draft.Deadline = &dt
+			}
+			draft.PendingInput = ""
+			draft.PendingDate = ""
+		case "deadline_time":
+			h, m, ok := parseTimeOfDay(msg.Text)
+			if !ok {
+				return b.sendMenuText(ctx, msg.Chat.ID, "Время в формате 17:00 или 17.00")
+			}
+			loc, err := usecase.LocationFromTZ(tz)
+			if err != nil {
+				return err
+			}
+			date, err := time.ParseInLocation("2006-01-02", draft.PendingDate, loc)
+			if err != nil {
+				return b.sendMenuText(ctx, msg.Chat.ID, "Не понял дату, попробуй ещё раз.")
+			}
+			dt := time.Date(date.Year(), date.Month(), date.Day(), h, m, 0, 0, loc)
+			draft.Deadline = &dt
+			draft.PendingInput = ""
+			draft.PendingDate = ""
+		default:
 			return nil
 		}
-		dt, noDeadline, err := parseFlexibleDateTime(msg.Text, tz)
-		if err != nil {
-			return b.sendMenuText(ctx, msg.Chat.ID, "Не понял дату. Примеры: сегодня 18:30, завтра 9, через 2ч, 12.02 18:00")
-		}
-		if noDeadline {
-			draft.Deadline = nil
-		} else {
-			draft.Deadline = &dt
-		}
-		draft.PendingInput = ""
 		session.State = domain.SessionStateCreateRemind
 		if err := b.saveSession(session, draft); err != nil {
 			return err
@@ -65,7 +96,7 @@ func (b *Bot) handleWizardMessage(ctx context.Context, msg *Message, user domain
 		}
 		dur, err := parseDurationFlexible(strings.TrimSpace(msg.Text))
 		if err != nil || dur <= 0 {
-			return b.sendMenuText(ctx, msg.Chat.ID, "Формат интервала: 15m / 2h / 1d")
+			return b.sendMenuText(ctx, msg.Chat.ID, "Формат интервала: 15m, 2h, 1d")
 		}
 		draft.RemindKind = "interval"
 		draft.RemindInterval = dur.String()
@@ -117,23 +148,23 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cb *CallbackQuery, actio
 			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
 			return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, "Напоминания?", remindInlineKeyboard())
 		case "today":
-			dt := endOfDay(time.Now(), tz)
-			draft.Deadline = &dt
-			session.State = domain.SessionStateCreateRemind
+			date := time.Now().In(usecaseTimeLocation(tz))
+			draft.PendingInput = "deadline_time"
+			draft.PendingDate = date.Format("2006-01-02")
 			if err := b.saveSession(session, draft); err != nil {
 				return err
 			}
 			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "Сегодня")
-			return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, "Напоминания?", remindInlineKeyboard())
+			return b.sendMenuText(ctx, cb.Message.Chat.ID, "Введи время (например 17:00 или 17.00)")
 		case "tomorrow":
-			dt := endOfDay(time.Now().Add(24*time.Hour), tz)
-			draft.Deadline = &dt
-			session.State = domain.SessionStateCreateRemind
+			date := time.Now().In(usecaseTimeLocation(tz)).Add(24 * time.Hour)
+			draft.PendingInput = "deadline_time"
+			draft.PendingDate = date.Format("2006-01-02")
 			if err := b.saveSession(session, draft); err != nil {
 				return err
 			}
 			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "Завтра")
-			return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, "Напоминания?", remindInlineKeyboard())
+			return b.sendMenuText(ctx, cb.Message.Chat.ID, "Введи время (например 17:00 или 17.00)")
 		case "input":
 			draft.PendingInput = "deadline"
 			if err := b.saveSession(session, draft); err != nil {
@@ -185,7 +216,7 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cb *CallbackQuery, actio
 				return err
 			}
 			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
-			return b.sendMenuText(ctx, cb.Message.Chat.ID, "Пришли интервал: 15m / 2h / 1d")
+			return b.sendMenuText(ctx, cb.Message.Chat.ID, "Пришли интервал: 15m, 2h, 1d")
 		default:
 			return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
 		}
@@ -202,7 +233,7 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cb *CallbackQuery, actio
 			}
 			_ = b.sessions.DeleteSession(user.ID)
 			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "Создал.")
-			if err := b.client.SendMessageWithMarkup(ctx, cb.Message.Chat.ID, formatTaskLine(task), taskInlineKeyboard(task.ID)); err != nil {
+			if err := b.client.SendMessageWithMarkup(ctx, cb.Message.Chat.ID, formatTaskLineWithAttachments(task, len(draft.Attachments)), taskInlineKeyboard(task.ID)); err != nil {
 				return err
 			}
 			return b.sendMenuText(ctx, cb.Message.Chat.ID, "Готово! Что дальше?")
@@ -341,12 +372,25 @@ func parseWizardCallback(data string) (string, string, bool) {
 	return parts[1], parts[2], true
 }
 
+type draftAttachment struct {
+	Type           string `json:"type"`
+	TelegramFileID string `json:"telegram_file_id"`
+	FileUniqueID   string `json:"file_unique_id"`
+	Caption        string `json:"caption,omitempty"`
+	MimeType       string `json:"mime_type,omitempty"`
+	FileName       string `json:"file_name,omitempty"`
+	FileSize       int64  `json:"file_size,omitempty"`
+}
+
 type taskDraft struct {
-	Text           string     `json:"text"`
-	Deadline       *time.Time `json:"deadline,omitempty"`
-	RemindKind     string     `json:"remind_kind,omitempty"`
-	RemindInterval string     `json:"remind_interval,omitempty"`
-	PendingInput   string     `json:"pending_input,omitempty"`
+	Text           string            `json:"text"`
+	Deadline       *time.Time        `json:"deadline,omitempty"`
+	RemindKind     string            `json:"remind_kind,omitempty"`
+	RemindInterval string            `json:"remind_interval,omitempty"`
+	PendingInput   string            `json:"pending_input,omitempty"`
+	PendingDate    string            `json:"pending_date,omitempty"`
+	ForwardMeta    json.RawMessage   `json:"forward_meta,omitempty"`
+	Attachments    []draftAttachment `json:"attachments,omitempty"`
 }
 
 func (b *Bot) loadSession(userID int64) (domain.UserSession, taskDraft) {
@@ -370,6 +414,86 @@ func (b *Bot) saveSession(session domain.UserSession, draft taskDraft) error {
 	return b.sessions.UpsertSession(session)
 }
 
+type wizardContent struct {
+	text             string
+	attachments      []draftAttachment
+	attachmentsFound bool
+	forwardMeta      json.RawMessage
+	forwardFound     bool
+}
+
+func extractWizardContent(msg *Message) (wizardContent, bool) {
+	var content wizardContent
+	if msg == nil {
+		return content, false
+	}
+	text := strings.TrimSpace(msg.Text)
+	caption := strings.TrimSpace(msg.Caption)
+	if text != "" {
+		content.text = text
+	} else if caption != "" {
+		content.text = caption
+	}
+	if len(msg.Photo) > 0 {
+		p := pickLargestPhoto(msg.Photo)
+		content.attachments = append(content.attachments, draftAttachment{
+			Type:           "photo",
+			TelegramFileID: p.FileID,
+			FileUniqueID:   p.FileUniqueID,
+			Caption:        caption,
+			FileSize:       p.FileSize,
+		})
+		content.attachmentsFound = true
+	}
+	if msg.Document != nil {
+		d := msg.Document
+		content.attachments = append(content.attachments, draftAttachment{
+			Type:           "document",
+			TelegramFileID: d.FileID,
+			FileUniqueID:   d.FileUniqueID,
+			Caption:        caption,
+			MimeType:       d.MimeType,
+			FileName:       d.FileName,
+			FileSize:       d.FileSize,
+		})
+		content.attachmentsFound = true
+	}
+	if msg.ForwardOrigin != nil {
+		data, err := json.Marshal(msg.ForwardOrigin)
+		if err == nil {
+			content.forwardMeta = data
+			content.forwardFound = true
+		}
+	}
+	if content.text == "" {
+		if content.forwardFound {
+			content.text = "Пересланное сообщение"
+		} else if content.attachmentsFound {
+			content.text = "Вложение без текста"
+		}
+	}
+	if content.text == "" && !content.attachmentsFound && !content.forwardFound {
+		return content, false
+	}
+	return content, true
+}
+
+func pickLargestPhoto(items []PhotoSize) PhotoSize {
+	best := items[0]
+	bestSize := best.FileSize
+	for _, p := range items[1:] {
+		size := p.FileSize
+		if size == 0 {
+			size = int64(p.Width * p.Height)
+		}
+		if size > bestSize {
+			best = p
+			bestSize = size
+		}
+	}
+	return best
+}
+
 func draftSummary(draft taskDraft) string {
 	var deadline string
 	if draft.Deadline != nil {
@@ -384,7 +508,15 @@ func draftSummary(draft taskDraft) string {
 	case "interval":
 		remind = "каждые " + draft.RemindInterval
 	}
-	return fmt.Sprintf("Проверь:\nТекст: %s\nДедлайн: %s\nНапоминания: %s", draft.Text, deadline, remind)
+	attachments := "нет"
+	if len(draft.Attachments) > 0 {
+		attachments = fmt.Sprintf("%d", len(draft.Attachments))
+	}
+	forward := "нет"
+	if len(draft.ForwardMeta) > 0 {
+		forward = "есть"
+	}
+	return fmt.Sprintf("Проверь:\nТекст: %s\nДедлайн: %s\nНапоминания: %s\nВложения: %s\nФорвард: %s", draft.Text, deadline, remind, attachments, forward)
 }
 
 func (b *Bot) createTaskFromDraft(user domain.User, draft taskDraft, tz string) (domain.Task, error) {
@@ -408,7 +540,26 @@ func (b *Bot) createTaskFromDraft(user domain.User, draft taskDraft, tz string) 
 		rt := time.Now().In(draft.DeadlineLocationOrUTC(tz)).Add(dur)
 		remindAt = &rt
 	}
-	return b.taskService.Create(user.ID, draft.Text, draft.Deadline, remindAt, tz)
+	created, err := b.taskService.Create(user.ID, draft.Text, draft.Deadline, remindAt, draft.ForwardMeta, tz)
+	if err != nil {
+		return domain.Task{}, err
+	}
+	for _, a := range draft.Attachments {
+		_, err := b.attachments.CreateAttachment(domain.Attachment{
+			TaskID:         created.ID,
+			Type:           a.Type,
+			TelegramFileID: a.TelegramFileID,
+			FileUniqueID:   a.FileUniqueID,
+			Caption:        a.Caption,
+			MimeType:       a.MimeType,
+			FileName:       a.FileName,
+			FileSize:       a.FileSize,
+		})
+		if err != nil {
+			return domain.Task{}, err
+		}
+	}
+	return created, nil
 }
 
 func (d taskDraft) DeadlineLocationOrUTC(tz string) *time.Location {
@@ -422,11 +573,10 @@ func (d taskDraft) DeadlineLocationOrUTC(tz string) *time.Location {
 	return loc
 }
 
-func endOfDay(now time.Time, tz string) time.Time {
+func usecaseTimeLocation(tz string) *time.Location {
 	loc, err := usecase.LocationFromTZ(tz)
 	if err != nil {
-		loc = time.UTC
+		return time.UTC
 	}
-	year, month, day := now.In(loc).Date()
-	return time.Date(year, month, day, 23, 59, 0, 0, loc)
+	return loc
 }

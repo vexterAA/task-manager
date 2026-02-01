@@ -10,21 +10,25 @@ import (
 )
 
 type Store struct {
-	mu         sync.Mutex
-	nextUserID int64
-	nextTaskID int64
-	users      map[int64]domain.User
-	tasks      map[int64]domain.Task
-	sessions   map[int64]domain.UserSession
+	mu               sync.Mutex
+	nextUserID       int64
+	nextTaskID       int64
+	nextAttachmentID int64
+	users            map[int64]domain.User
+	tasks            map[int64]domain.Task
+	attachments      map[int64]domain.Attachment
+	sessions         map[int64]domain.UserSession
 }
 
 func New() *Store {
 	return &Store{
-		nextUserID: 1,
-		nextTaskID: 1,
-		users:      make(map[int64]domain.User),
-		tasks:      make(map[int64]domain.Task),
-		sessions:   make(map[int64]domain.UserSession),
+		nextUserID:       1,
+		nextTaskID:       1,
+		nextAttachmentID: 1,
+		users:            make(map[int64]domain.User),
+		tasks:            make(map[int64]domain.Task),
+		attachments:      make(map[int64]domain.Attachment),
+		sessions:         make(map[int64]domain.UserSession),
 	}
 }
 
@@ -220,6 +224,42 @@ func (s *Store) ListDueForNotify(now time.Time) ([]domain.Task, error) {
 	return out, nil
 }
 
+func (s *Store) CreateAttachment(a domain.Attachment) (domain.Attachment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.tasks[a.TaskID]; !ok {
+		return domain.Attachment{}, storage.ErrNotFound
+	}
+	a.ID = s.nextAttachmentID
+	s.nextAttachmentID++
+	s.attachments[a.ID] = a
+	return a, nil
+}
+
+func (s *Store) ListAttachmentsByTaskID(taskID int64) ([]domain.Attachment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]domain.Attachment, 0)
+	for _, a := range s.attachments {
+		if a.TaskID == taskID {
+			out = append(out, a)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (s *Store) DeleteAttachmentsByTaskID(taskID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, a := range s.attachments {
+		if a.TaskID == taskID {
+			delete(s.attachments, id)
+		}
+	}
+	return nil
+}
+
 func (s *Store) DeleteTask(id int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -227,6 +267,11 @@ func (s *Store) DeleteTask(id int64) error {
 		return storage.ErrNotFound
 	}
 	delete(s.tasks, id)
+	for attID, a := range s.attachments {
+		if a.TaskID == id {
+			delete(s.attachments, attID)
+		}
+	}
 	return nil
 }
 

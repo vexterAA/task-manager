@@ -17,7 +17,7 @@ func TestTaskServiceCreate_ValidatesAndNormalizesTimes(t *testing.T) {
 	}
 	svc := NewTaskService(repo)
 
-	if _, err := svc.Create(user.ID, "   ", nil, nil, "+03:00"); !errors.Is(err, ErrInvalidText) {
+	if _, err := svc.Create(user.ID, "   ", nil, nil, nil, "+03:00"); !errors.Is(err, ErrInvalidText) {
 		t.Fatalf("expected ErrInvalidText, got %v", err)
 	}
 
@@ -25,7 +25,7 @@ func TestTaskServiceCreate_ValidatesAndNormalizesTimes(t *testing.T) {
 	dueAt := time.Date(2026, 1, 2, 10, 0, 0, 0, loc)
 	remindAt := time.Date(2026, 1, 2, 9, 30, 0, 0, loc)
 
-	created, err := svc.Create(user.ID, "  test  ", &dueAt, &remindAt, "+03:00")
+	created, err := svc.Create(user.ID, "  test  ", &dueAt, &remindAt, nil, "+03:00")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestTaskServiceListDueForNotify_Idempotent(t *testing.T) {
 
 	now := time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC)
 	remindAt := now.Add(-time.Minute)
-	_, err = svc.Create(user.ID, "notify", nil, &remindAt, "UTC")
+	_, err = svc.Create(user.ID, "notify", nil, &remindAt, nil, "UTC")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}

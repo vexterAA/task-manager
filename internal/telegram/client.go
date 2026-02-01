@@ -88,6 +88,50 @@ func (c *Client) SendMessageWithMarkup(ctx context.Context, chatID int64, text s
 	return nil
 }
 
+func (c *Client) SendPhoto(ctx context.Context, chatID int64, fileID, caption string) error {
+	payload := map[string]any{
+		"chat_id": chatID,
+		"photo":   fileID,
+	}
+	if caption != "" {
+		payload["caption"] = caption
+	}
+	return c.sendMedia(ctx, "sendPhoto", payload)
+}
+
+func (c *Client) SendDocument(ctx context.Context, chatID int64, fileID, caption string) error {
+	payload := map[string]any{
+		"chat_id":  chatID,
+		"document": fileID,
+	}
+	if caption != "" {
+		payload["caption"] = caption
+	}
+	return c.sendMedia(ctx, "sendDocument", payload)
+}
+
+func (c *Client) sendMedia(ctx context.Context, method string, payload map[string]any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		fmt.Sprintf("%s/bot%s/%s", c.baseURL, c.token, method),
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var res apiResponse[Message]
+	if err := c.do(req, &res); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (c *Client) AnswerCallbackQuery(ctx context.Context, callbackID, text string) error {
 	payload := map[string]any{
 		"callback_query_id": callbackID,
@@ -214,10 +258,14 @@ type Update struct {
 }
 
 type Message struct {
-	MessageID int    `json:"message_id"`
-	From      *User  `json:"from"`
-	Chat      Chat   `json:"chat"`
-	Text      string `json:"text"`
+	MessageID     int            `json:"message_id"`
+	From          *User          `json:"from"`
+	Chat          Chat           `json:"chat"`
+	Text          string         `json:"text"`
+	Caption       string         `json:"caption"`
+	Photo         []PhotoSize    `json:"photo"`
+	Document      *Document      `json:"document"`
+	ForwardOrigin *ForwardOrigin `json:"forward_origin"`
 }
 
 type CallbackQuery struct {
@@ -236,6 +284,37 @@ type User struct {
 }
 
 type Chat struct {
-	ID   int64  `json:"id"`
-	Type string `json:"type"`
+	ID        int64  `json:"id"`
+	Type      string `json:"type"`
+	Title     string `json:"title"`
+	Username  string `json:"username"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+}
+
+type PhotoSize struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	FileSize     int64  `json:"file_size"`
+}
+
+type Document struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileName     string `json:"file_name"`
+	MimeType     string `json:"mime_type"`
+	FileSize     int64  `json:"file_size"`
+}
+
+type ForwardOrigin struct {
+	Type            string `json:"type"`
+	Date            int64  `json:"date"`
+	SenderUser      *User  `json:"sender_user"`
+	SenderChat      *Chat  `json:"sender_chat"`
+	Chat            *Chat  `json:"chat"`
+	MessageID       int    `json:"message_id"`
+	AuthorSignature string `json:"author_signature"`
+	SenderName      string `json:"sender_name"`
 }

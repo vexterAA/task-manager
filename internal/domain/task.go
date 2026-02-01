@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	TaskStatusActive = "active"
@@ -8,15 +11,16 @@ const (
 )
 
 type Task struct {
-	ID         int64      `json:"id"`
-	UserID     int64      `json:"user_id"`
-	Text       string     `json:"text"`
-	Status     string     `json:"status"`
-	DueAt      *time.Time `json:"due_at,omitempty"`
-	RemindAt   *time.Time `json:"remind_at,omitempty"`
-	NotifiedAt *time.Time `json:"notified_at,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	ID          int64           `json:"id"`
+	UserID      int64           `json:"user_id"`
+	Text        string          `json:"text"`
+	Status      string          `json:"status"`
+	DueAt       *time.Time      `json:"due_at,omitempty"`
+	RemindAt    *time.Time      `json:"remind_at,omitempty"`
+	NotifiedAt  *time.Time      `json:"notified_at,omitempty"`
+	ForwardMeta json.RawMessage `json:"forward_meta,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
 type Attachment struct {
@@ -26,4 +30,7 @@ type Attachment struct {
 	TelegramFileID string `json:"telegram_file_id"`
 	FileUniqueID   string `json:"file_unique_id"`
 	Caption        string `json:"caption,omitempty"`
+	MimeType       string `json:"mime_type,omitempty"`
+	FileName       string `json:"file_name,omitempty"`
+	FileSize       int64  `json:"file_size,omitempty"`
 }

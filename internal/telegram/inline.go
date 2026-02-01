@@ -11,12 +11,12 @@ import (
 
 func formatTaskList(items []domain.Task) string {
 	if len(items) == 0 {
-		return "Пока пусто. Добавь задачу через /add."
+		return "Пока пусто. Жми «Создать задачу» в меню."
 	}
 	lines := make([]string, 0, len(items)+1)
 	lines = append(lines, "Активные задачи:")
 	for _, t := range items {
-		line := fmt.Sprintf("%d) %s", t.ID, t.Text)
+		line := formatTaskLineWithAttachments(t, 0)
 		if t.DueAt != nil {
 			line += " — до " + formatTime(t.DueAt)
 		}
@@ -26,9 +26,16 @@ func formatTaskList(items []domain.Task) string {
 }
 
 func formatTaskLine(t domain.Task) string {
-	line := fmt.Sprintf("%d) %s", t.ID, t.Text)
+	return formatTaskLineWithAttachments(t, 0)
+}
+
+func formatTaskLineWithAttachments(t domain.Task, attachments int) string {
+	line := fmt.Sprintf("Задача #%d: %s", t.ID, t.Text)
 	if t.DueAt != nil {
 		line += " — до " + formatTime(t.DueAt)
+	}
+	if attachments > 0 {
+		line += fmt.Sprintf(" · 📎 %d", attachments)
 	}
 	return line
 }
@@ -48,10 +55,13 @@ func taskInlineKeyboard(id int64) *InlineKeyboardMarkup {
 				{Text: "🗑 Удалить", CallbackData: fmt.Sprintf("t:del:%d", id)},
 			},
 			{
-				{Text: "⏰ Напоминания / Дедлайн", CallbackData: fmt.Sprintf("t:rem:%d", id)},
+				{Text: "⏰ Дедлайн и напоминания", CallbackData: fmt.Sprintf("t:rem:%d", id)},
 			},
 			{
 				{Text: "💤 Snooze 15м", CallbackData: fmt.Sprintf("t:snooze:%d", id)},
+			},
+			{
+				{Text: "📎 Вложения", CallbackData: fmt.Sprintf("t:att:%d", id)},
 			},
 		},
 	}
@@ -87,7 +97,7 @@ func parseTaskCallback(data string) (string, int64, bool) {
 		return "", 0, false
 	}
 	switch parts[1] {
-	case "done", "del", "rem", "snooze":
+	case "done", "del", "rem", "snooze", "att":
 		return parts[1], id, true
 	default:
 		return "", 0, false

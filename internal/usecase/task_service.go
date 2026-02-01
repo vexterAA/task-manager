@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -27,7 +28,7 @@ func NewTaskService(repo repository.TaskRepository) *TaskService {
 	}
 }
 
-func (s *TaskService) Create(userID int64, text string, dueAt, remindAt *time.Time, tz string) (domain.Task, error) {
+func (s *TaskService) Create(userID int64, text string, dueAt, remindAt *time.Time, forwardMeta json.RawMessage, tz string) (domain.Task, error) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return domain.Task{}, ErrInvalidText
@@ -37,17 +38,27 @@ func (s *TaskService) Create(userID int64, text string, dueAt, remindAt *time.Ti
 		return domain.Task{}, err
 	}
 	task := domain.Task{
-		UserID:   userID,
-		Text:     trimmed,
-		Status:   domain.TaskStatusActive,
-		DueAt:    toUTC(dueAt),
-		RemindAt: toUTC(remindAt),
+		UserID:      userID,
+		Text:        trimmed,
+		Status:      domain.TaskStatusActive,
+		DueAt:       toUTC(dueAt),
+		RemindAt:    toUTC(remindAt),
+		ForwardMeta: cloneJSON(forwardMeta),
 	}
 	created, err := s.repo.Create(task)
 	if err != nil {
 		return domain.Task{}, err
 	}
 	return toLocation(created, loc), nil
+}
+
+func cloneJSON(v json.RawMessage) json.RawMessage {
+	if len(v) == 0 {
+		return nil
+	}
+	out := make(json.RawMessage, len(v))
+	copy(out, v)
+	return out
 }
 
 func (s *TaskService) ListActive(userID int64, tz string) ([]domain.Task, error) {

@@ -154,7 +154,7 @@ func parseTimeOfDay(s string) (int, int, bool) {
 	if s == "" {
 		return 0, 0, false
 	}
-	reHM := regexp.MustCompile(`^(\d{1,2}):(\d{2})$`)
+	reHM := regexp.MustCompile(`^(\d{1,2})[:.](\d{2})$`)
 	if m := reHM.FindStringSubmatch(s); len(m) > 0 {
 		h, _ := strconv.Atoi(m[1])
 		min, _ := strconv.Atoi(m[2])
@@ -168,6 +168,14 @@ func parseTimeOfDay(s string) (int, int, bool) {
 		h, _ := strconv.Atoi(m[1])
 		if h >= 0 && h <= 23 {
 			return h, 0, true
+		}
+	}
+	reHSpaceM := regexp.MustCompile(`^(\d{1,2})\s+(\d{2})$`)
+	if m := reHSpaceM.FindStringSubmatch(s); len(m) > 0 {
+		h, _ := strconv.Atoi(m[1])
+		min, _ := strconv.Atoi(m[2])
+		if h >= 0 && h <= 23 && min >= 0 && min <= 59 {
+			return h, min, true
 		}
 	}
 	return 0, 0, false
