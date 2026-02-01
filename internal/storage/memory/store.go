@@ -15,6 +15,7 @@ type Store struct {
 	nextTaskID int64
 	users      map[int64]domain.User
 	tasks      map[int64]domain.Task
+	sessions   map[int64]domain.UserSession
 }
 
 func New() *Store {
@@ -23,6 +24,7 @@ func New() *Store {
 		nextTaskID: 1,
 		users:      make(map[int64]domain.User),
 		tasks:      make(map[int64]domain.Task),
+		sessions:   make(map[int64]domain.UserSession),
 	}
 }
 
@@ -59,6 +61,31 @@ func (s *Store) GetByTelegramID(telegramUserID int64) (domain.User, error) {
 		}
 	}
 	return domain.User{}, storage.ErrNotFound
+}
+
+func (s *Store) GetSession(userID int64) (domain.UserSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[userID]
+	if !ok {
+		return domain.UserSession{}, storage.ErrNotFound
+	}
+	return session, nil
+}
+
+func (s *Store) UpsertSession(session domain.UserSession) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session.UpdatedAt = time.Now().UTC()
+	s.sessions[session.UserID] = session
+	return nil
+}
+
+func (s *Store) DeleteSession(userID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sessions, userID)
+	return nil
 }
 
 func (s *Store) ListTasks(userID int64, status string) ([]domain.Task, error) {

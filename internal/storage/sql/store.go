@@ -121,6 +121,52 @@ func (s *Store) GetByTelegramID(telegramUserID int64) (domain.User, error) {
 	return u, nil
 }
 
+func (s *Store) GetSession(userID int64) (domain.UserSession, error) {
+	if s.db == nil {
+		return domain.UserSession{}, errors.New("db")
+	}
+	var sess domain.UserSession
+	row := s.db.QueryRow(`
+		select user_id, state, draft_json, updated_at
+		from user_sessions
+		where user_id = $1`,
+		userID,
+	)
+	if err := row.Scan(&sess.UserID, &sess.State, &sess.DraftJSON, &sess.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.UserSession{}, storage.ErrNotFound
+		}
+		return domain.UserSession{}, err
+	}
+	return sess, nil
+}
+
+func (s *Store) UpsertSession(session domain.UserSession) error {
+	if s.db == nil {
+		return errors.New("db")
+	}
+	_, err := s.db.Exec(`
+		insert into user_sessions(user_id, state, draft_json, updated_at)
+		values ($1, $2, $3, now())
+		on conflict (user_id) do update
+		set state = excluded.state,
+			draft_json = excluded.draft_json,
+			updated_at = now()`,
+		session.UserID,
+		session.State,
+		session.DraftJSON,
+	)
+	return err
+}
+
+func (s *Store) DeleteSession(userID int64) error {
+	if s.db == nil {
+		return errors.New("db")
+	}
+	_, err := s.db.Exec(`delete from user_sessions where user_id = $1`, userID)
+	return err
+}
+
 func (s *Store) ListTasks(userID int64, status string) ([]domain.Task, error) {
 	if s.db == nil {
 		return nil, errors.New("db")

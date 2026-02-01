@@ -34,3 +34,10 @@ create table if not exists attachments(
 );
 
 create index if not exists attachments_task_id_idx on attachments(task_id);
+
+create table if not exists user_sessions(
+  user_id bigint primary key references users(id) on delete cascade,
+  state text not null,
+  draft_json text not null default '{}',
+  updated_at timestamptz not null default now()
+);

@@ -14,6 +14,7 @@ type Store interface {
 	httphandlers.Store
 	repository.TaskRepository
 	repository.UserRepository
+	repository.SessionRepository
 }
 
 type App struct {

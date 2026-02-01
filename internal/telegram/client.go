@@ -41,7 +41,7 @@ func (c *Client) GetUpdates(ctx context.Context, offset int, timeout time.Durati
 	if offset > 0 {
 		q.Set("offset", strconv.Itoa(offset))
 	}
-	q.Set("allowed_updates", `["message"]`)
+	q.Set("allowed_updates", `["message","callback_query"]`)
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -56,9 +56,16 @@ func (c *Client) GetUpdates(ctx context.Context, offset int, timeout time.Durati
 }
 
 func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) error {
+	return c.SendMessageWithMarkup(ctx, chatID, text, nil)
+}
+
+func (c *Client) SendMessageWithMarkup(ctx context.Context, chatID int64, text string, markup any) error {
 	payload := map[string]any{
 		"chat_id": chatID,
 		"text":    text,
+	}
+	if markup != nil {
+		payload["reply_markup"] = markup
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -79,6 +86,90 @@ func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) err
 		return err
 	}
 	return nil
+}
+
+func (c *Client) AnswerCallbackQuery(ctx context.Context, callbackID, text string) error {
+	payload := map[string]any{
+		"callback_query_id": callbackID,
+	}
+	if text != "" {
+		payload["text"] = text
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		fmt.Sprintf("%s/bot%s/answerCallbackQuery", c.baseURL, c.token),
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var res apiResponse[bool]
+	if err := c.do(req, &res); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Client) EditMessageReplyMarkup(ctx context.Context, chatID int64, messageID int, markup any) error {
+	payload := map[string]any{
+		"chat_id":    chatID,
+		"message_id": messageID,
+	}
+	if markup != nil {
+		payload["reply_markup"] = markup
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		fmt.Sprintf("%s/bot%s/editMessageReplyMarkup", c.baseURL, c.token),
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var res apiResponse[bool]
+	if err := c.do(req, &res); err != nil {
+		return err
+	}
+	return nil
+}
+
+type ReplyKeyboardMarkup struct {
+	Keyboard              [][]KeyboardButton `json:"keyboard"`
+	ResizeKeyboard        bool               `json:"resize_keyboard,omitempty"`
+	IsPersistent          bool               `json:"is_persistent,omitempty"`
+	OneTimeKeyboard       bool               `json:"one_time_keyboard,omitempty"`
+	InputFieldPlaceholder string             `json:"input_field_placeholder,omitempty"`
+}
+
+type KeyboardButton struct {
+	Text string `json:"text"`
+}
+
+type ForceReply struct {
+	ForceReply            bool   `json:"force_reply"`
+	InputFieldPlaceholder string `json:"input_field_placeholder,omitempty"`
+	Selective             bool   `json:"selective,omitempty"`
+}
+
+type InlineKeyboardMarkup struct {
+	InlineKeyboard [][]InlineKeyboardButton `json:"inline_keyboard"`
+}
+
+type InlineKeyboardButton struct {
+	Text         string `json:"text"`
+	CallbackData string `json:"callback_data"`
 }
 
 type apiResponse[T any] struct {
@@ -108,13 +199,18 @@ func (c *Client) do(req *http.Request, out any) error {
 		if !v.Ok {
 			return errors.New(v.Description)
 		}
+	case *apiResponse[bool]:
+		if !v.Ok {
+			return errors.New(v.Description)
+		}
 	}
 	return nil
 }
 
 type Update struct {
-	UpdateID int      `json:"update_id"`
-	Message  *Message `json:"message"`
+	UpdateID      int            `json:"update_id"`
+	Message       *Message       `json:"message"`
+	CallbackQuery *CallbackQuery `json:"callback_query"`
 }
 
 type Message struct {
@@ -122,6 +218,13 @@ type Message struct {
 	From      *User  `json:"from"`
 	Chat      Chat   `json:"chat"`
 	Text      string `json:"text"`
+}
+
+type CallbackQuery struct {
+	ID      string   `json:"id"`
+	From    User     `json:"from"`
+	Message *Message `json:"message"`
+	Data    string   `json:"data"`
 }
 
 type User struct {
