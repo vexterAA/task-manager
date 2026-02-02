@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
+	"unicode/utf8"
 )
 
 type Client struct {
@@ -182,7 +185,7 @@ func (c *Client) EditMessageReplyMarkup(ctx context.Context, chatID int64, messa
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	var res apiResponse[bool]
+	var res apiResponse[json.RawMessage]
 	if err := c.do(req, &res); err != nil {
 		return err
 	}
@@ -231,24 +234,56 @@ func (c *Client) do(req *http.Request, out any) error {
 	if resp.StatusCode >= http.StatusBadRequest {
 		return fmt.Errorf("telegram http status: %s", resp.Status)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		log.Printf("telegram api decode error: %s %s: %v", req.Method, req.URL.Path, err)
+		log.Printf("telegram api raw response: %s", truncateLogBody(body, 800))
 		return err
 	}
 	switch v := out.(type) {
 	case *apiResponse[[]Update]:
 		if !v.Ok {
+			log.Printf("telegram api error: %s %s: %s", req.Method, req.URL.Path, v.Description)
+			log.Printf("telegram api raw response: %s", truncateLogBody(body, 800))
 			return errors.New(v.Description)
 		}
 	case *apiResponse[Message]:
 		if !v.Ok {
+			log.Printf("telegram api error: %s %s: %s", req.Method, req.URL.Path, v.Description)
+			log.Printf("telegram api raw response: %s", truncateLogBody(body, 800))
 			return errors.New(v.Description)
 		}
 	case *apiResponse[bool]:
 		if !v.Ok {
+			log.Printf("telegram api error: %s %s: %s", req.Method, req.URL.Path, v.Description)
+			log.Printf("telegram api raw response: %s", truncateLogBody(body, 800))
+			return errors.New(v.Description)
+		}
+	case *apiResponse[json.RawMessage]:
+		if !v.Ok {
+			log.Printf("telegram api error: %s %s: %s", req.Method, req.URL.Path, v.Description)
+			log.Printf("telegram api raw response: %s", truncateLogBody(body, 800))
 			return errors.New(v.Description)
 		}
 	}
 	return nil
+}
+
+func truncateLogBody(body []byte, max int) string {
+	if len(body) <= max {
+		if utf8.Valid(body) {
+			return string(body)
+		}
+		return string(bytes.ToValidUTF8(body, []byte("?")))
+	}
+	slice := body[:max]
+	if utf8.Valid(slice) {
+		return string(slice) + "…"
+	}
+	return string(bytes.ToValidUTF8(slice, []byte("?"))) + "…"
 }
 
 type Update struct {
