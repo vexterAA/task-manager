@@ -67,6 +67,16 @@ func (s *Store) GetByTelegramID(telegramUserID int64) (domain.User, error) {
 	return domain.User{}, storage.ErrNotFound
 }
 
+func (s *Store) GetUserByID(id int64) (domain.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[id]
+	if !ok {
+		return domain.User{}, storage.ErrNotFound
+	}
+	return u, nil
+}
+
 func (s *Store) GetSession(userID int64) (domain.UserSession, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

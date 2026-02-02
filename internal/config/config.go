@@ -16,6 +16,8 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	TelegramToken   string
 	TelegramPoll    time.Duration
+	TelegramNotify  time.Duration
+	SessionTTL      time.Duration
 }
 
 func getenv(key, def string) string {
@@ -55,6 +57,8 @@ func Load() Config {
 		ShutdownTimeout: getdur("SHUTDOWN_TIMEOUT", 5*time.Second),
 		TelegramToken:   getenv("TELEGRAM_TOKEN", ""),
 		TelegramPoll:    getdur("TELEGRAM_POLL_TIMEOUT", 20*time.Second),
+		TelegramNotify:  getdur("TELEGRAM_NOTIFY_INTERVAL", 30*time.Second),
+		SessionTTL:      getdur("SESSION_TTL", 30*time.Minute),
 	}
 }
 

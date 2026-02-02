@@ -13,6 +13,7 @@ const (
 type Task struct {
 	ID          int64           `json:"id"`
 	UserID      int64           `json:"user_id"`
+	Title       string          `json:"title,omitempty"`
 	Text        string          `json:"text"`
 	Status      string          `json:"status"`
 	DueAt       *time.Time      `json:"due_at,omitempty"`

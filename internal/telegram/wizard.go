@@ -28,6 +28,10 @@ func (b *Bot) startWizard(ctx context.Context, user domain.User, chatID int64) e
 }
 
 func (b *Bot) handleWizardMessage(ctx context.Context, msg *Message, user domain.User, tz string, session domain.UserSession, draft taskDraft) error {
+	if strings.EqualFold(strings.TrimSpace(msg.Text), "отмена") {
+		_ = b.sessions.DeleteSession(user.ID)
+		return b.sendMenuText(ctx, msg.Chat.ID, "Ок, отменил.")
+	}
 	switch session.State {
 	case domain.SessionStateCreateText:
 		content, ok := extractWizardContent(msg)
@@ -46,6 +50,17 @@ func (b *Bot) handleWizardMessage(ctx context.Context, msg *Message, user domain
 		if draft.Text == "" {
 			draft.Text = "Вложение без текста"
 		}
+		session.State = domain.SessionStateCreateTitle
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		return b.sendMenuWithInline(ctx, msg.Chat.ID, "Добавить название?", titleInlineKeyboard())
+	case domain.SessionStateCreateTitle:
+		title := strings.TrimSpace(msg.Text)
+		if title == "" {
+			return b.sendMenuText(ctx, msg.Chat.ID, "Название пустое. Напиши коротко или нажми «Нет».")
+		}
+		draft.Title = title
 		session.State = domain.SessionStateCreateDeadline
 		if err := b.saveSession(session, draft); err != nil {
 			return err
@@ -130,6 +145,28 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cb *CallbackQuery, actio
 		return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
 	}
 	switch action {
+	case "title":
+		if session.State != domain.SessionStateCreateTitle {
+			return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+		}
+		switch args {
+		case "yes":
+			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+			return b.client.SendMessageWithMarkup(ctx, cb.Message.Chat.ID, "Ок, напиши название задачи.", &ForceReply{
+				ForceReply:            true,
+				InputFieldPlaceholder: "Название",
+			})
+		case "no":
+			draft.Title = ""
+			session.State = domain.SessionStateCreateDeadline
+			if err := b.saveSession(session, draft); err != nil {
+				return err
+			}
+			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+			return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, "Нужен дедлайн?", deadlineInlineKeyboard())
+		default:
+			return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+		}
 	case "cancel":
 		_ = b.sessions.DeleteSession(user.ID)
 		_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "Ок, отменил.")
@@ -257,6 +294,16 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cb *CallbackQuery, actio
 			return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
 		}
 		switch args {
+		case "title":
+			session.State = domain.SessionStateCreateTitle
+			if err := b.saveSession(session, draft); err != nil {
+				return err
+			}
+			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+			return b.client.SendMessageWithMarkup(ctx, cb.Message.Chat.ID, "Ок, напиши название задачи.", &ForceReply{
+				ForceReply:            true,
+				InputFieldPlaceholder: "Название",
+			})
 		case "text":
 			session.State = domain.SessionStateCreateText
 			if err := b.saveSession(session, draft); err != nil {
@@ -343,15 +390,32 @@ func confirmInlineKeyboard() *InlineKeyboardMarkup {
 	}
 }
 
+func titleInlineKeyboard() *InlineKeyboardMarkup {
+	return &InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{
+				{Text: "Да", CallbackData: "w:title:yes"},
+				{Text: "Нет", CallbackData: "w:title:no"},
+			},
+			{
+				{Text: "Отмена", CallbackData: "w:cancel"},
+			},
+		},
+	}
+}
+
 func editInlineKeyboard() *InlineKeyboardMarkup {
 	return &InlineKeyboardMarkup{
 		InlineKeyboard: [][]InlineKeyboardButton{
 			{
+				{Text: "✏️ Название", CallbackData: "w:edit:title"},
 				{Text: "✏️ Текст", CallbackData: "w:edit:text"},
-				{Text: "⏰ Дедлайн", CallbackData: "w:edit:deadline"},
 			},
 			{
+				{Text: "⏰ Дедлайн", CallbackData: "w:edit:deadline"},
 				{Text: "🔔 Напоминания", CallbackData: "w:edit:remind"},
+			},
+			{
 				{Text: "❌ Отмена", CallbackData: "w:confirm:cancel"},
 			},
 		},
@@ -383,6 +447,7 @@ type draftAttachment struct {
 }
 
 type taskDraft struct {
+	Title          string            `json:"title,omitempty"`
 	Text           string            `json:"text"`
 	Deadline       *time.Time        `json:"deadline,omitempty"`
 	RemindKind     string            `json:"remind_kind,omitempty"`
@@ -391,11 +456,16 @@ type taskDraft struct {
 	PendingDate    string            `json:"pending_date,omitempty"`
 	ForwardMeta    json.RawMessage   `json:"forward_meta,omitempty"`
 	Attachments    []draftAttachment `json:"attachments,omitempty"`
+	ListTaskIDs    []int64           `json:"list_task_ids,omitempty"`
 }
 
 func (b *Bot) loadSession(userID int64) (domain.UserSession, taskDraft) {
 	session, err := b.sessions.GetSession(userID)
 	if err != nil {
+		return domain.UserSession{UserID: userID, State: domain.SessionStateIdle}, taskDraft{}
+	}
+	if b.sessionTTL > 0 && time.Since(session.UpdatedAt) > b.sessionTTL {
+		_ = b.sessions.DeleteSession(userID)
 		return domain.UserSession{UserID: userID, State: domain.SessionStateIdle}, taskDraft{}
 	}
 	var draft taskDraft
@@ -516,7 +586,11 @@ func draftSummary(draft taskDraft) string {
 	if len(draft.ForwardMeta) > 0 {
 		forward = "есть"
 	}
-	return fmt.Sprintf("Проверь:\nТекст: %s\nДедлайн: %s\nНапоминания: %s\nВложения: %s\nФорвард: %s", draft.Text, deadline, remind, attachments, forward)
+	title := "не задано"
+	if strings.TrimSpace(draft.Title) != "" {
+		title = draft.Title
+	}
+	return fmt.Sprintf("Проверь:\nНазвание: %s\nТекст: %s\nДедлайн: %s\nНапоминания: %s\nВложения: %s\nФорвард: %s", title, draft.Text, deadline, remind, attachments, forward)
 }
 
 func (b *Bot) createTaskFromDraft(user domain.User, draft taskDraft, tz string) (domain.Task, error) {
@@ -540,7 +614,7 @@ func (b *Bot) createTaskFromDraft(user domain.User, draft taskDraft, tz string) 
 		rt := time.Now().In(draft.DeadlineLocationOrUTC(tz)).Add(dur)
 		remindAt = &rt
 	}
-	created, err := b.taskService.Create(user.ID, draft.Text, draft.Deadline, remindAt, draft.ForwardMeta, tz)
+	created, err := b.taskService.Create(user.ID, draft.Title, draft.Text, draft.Deadline, remindAt, draft.ForwardMeta, tz)
 	if err != nil {
 		return domain.Task{}, err
 	}

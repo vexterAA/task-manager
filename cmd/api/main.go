@@ -22,7 +22,7 @@ func main() {
 	botCtx, botCancel := context.WithCancel(context.Background())
 	if cfg.TelegramToken != "" {
 		taskService := usecase.NewTaskService(a.Store)
-		bot := telegram.NewBot(cfg.TelegramToken, taskService, a.Store, a.Store, a.Store, cfg.TelegramPoll)
+		bot := telegram.NewBot(cfg.TelegramToken, taskService, a.Store, a.Store, a.Store, cfg.TelegramPoll, cfg.TelegramNotify, cfg.SessionTTL)
 		go func() {
 			if err := bot.Run(botCtx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("telegram bot error: %v", err)

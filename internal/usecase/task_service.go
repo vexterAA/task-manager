@@ -28,17 +28,19 @@ func NewTaskService(repo repository.TaskRepository) *TaskService {
 	}
 }
 
-func (s *TaskService) Create(userID int64, text string, dueAt, remindAt *time.Time, forwardMeta json.RawMessage, tz string) (domain.Task, error) {
+func (s *TaskService) Create(userID int64, title, text string, dueAt, remindAt *time.Time, forwardMeta json.RawMessage, tz string) (domain.Task, error) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return domain.Task{}, ErrInvalidText
 	}
+	title = strings.TrimSpace(title)
 	loc, err := locationFromTZ(tz)
 	if err != nil {
 		return domain.Task{}, err
 	}
 	task := domain.Task{
 		UserID:      userID,
+		Title:       title,
 		Text:        trimmed,
 		Status:      domain.TaskStatusActive,
 		DueAt:       toUTC(dueAt),

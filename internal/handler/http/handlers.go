@@ -135,6 +135,7 @@ func (h *Handler) task(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		UserID     int64      `json:"user_id"`
+		Title      string     `json:"title"`
 		Text       string     `json:"text"`
 		Status     string     `json:"status"`
 		DueAt      *time.Time `json:"due_at"`
@@ -163,6 +164,7 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := h.store.CreateTask(domain.Task{
 		UserID:     req.UserID,
+		Title:      strings.TrimSpace(req.Title),
 		Text:       req.Text,
 		Status:     req.Status,
 		DueAt:      req.DueAt,
@@ -187,6 +189,7 @@ func (h *Handler) updateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
+		Title      *string    `json:"title"`
 		Text       *string    `json:"text"`
 		Status     *string    `json:"status"`
 		DueAt      *time.Time `json:"due_at"`
@@ -213,6 +216,9 @@ func (h *Handler) updateTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		item.Text = trimmed
+	}
+	if req.Title != nil {
+		item.Title = strings.TrimSpace(*req.Title)
 	}
 	if req.Status != nil {
 		if !validTaskStatus(*req.Status) {

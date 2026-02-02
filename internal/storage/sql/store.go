@@ -35,6 +35,7 @@ func scanTask(scanner taskScanner) (domain.Task, error) {
 	if err := scanner.Scan(
 		&t.ID,
 		&t.UserID,
+		&t.Title,
 		&t.Text,
 		&t.Status,
 		&dueAt,
@@ -126,6 +127,26 @@ func (s *Store) GetByTelegramID(telegramUserID int64) (domain.User, error) {
 	return u, nil
 }
 
+func (s *Store) GetUserByID(id int64) (domain.User, error) {
+	if s.db == nil {
+		return domain.User{}, errors.New("db")
+	}
+	var u domain.User
+	row := s.db.QueryRow(`
+		select id, telegram_user_id, chat_id, timezone, created_at
+		from users
+		where id = $1`,
+		id,
+	)
+	if err := row.Scan(&u.ID, &u.TelegramUserID, &u.ChatID, &u.Timezone, &u.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.User{}, storage.ErrNotFound
+		}
+		return domain.User{}, err
+	}
+	return u, nil
+}
+
 func (s *Store) GetSession(userID int64) (domain.UserSession, error) {
 	if s.db == nil {
 		return domain.UserSession{}, errors.New("db")
@@ -180,7 +201,7 @@ func (s *Store) ListTasks(userID int64, status string) ([]domain.Task, error) {
 	var err error
 	if status == "" {
 		rows, err = s.db.Query(`
-			select id, user_id, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at
+			select id, user_id, title, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at
 			from tasks
 			where user_id = $1
 			order by id`,
@@ -188,7 +209,7 @@ func (s *Store) ListTasks(userID int64, status string) ([]domain.Task, error) {
 		)
 	} else {
 		rows, err = s.db.Query(`
-			select id, user_id, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at
+			select id, user_id, title, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at
 			from tasks
 			where user_id = $1 and status = $2
 			order by id`,
@@ -220,7 +241,7 @@ func (s *Store) GetTask(id int64) (domain.Task, error) {
 		return domain.Task{}, errors.New("db")
 	}
 	row := s.db.QueryRow(`
-		select id, user_id, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at
+		select id, user_id, title, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at
 		from tasks
 		where id = $1`,
 		id,
@@ -247,10 +268,11 @@ func (s *Store) CreateTask(t domain.Task) (domain.Task, error) {
 		t.Status = domain.TaskStatusActive
 	}
 	row := s.db.QueryRow(`
-		insert into tasks(user_id, text, status, due_at, remind_at, notified_at, forward_meta)
-		values ($1, $2, $3, $4, $5, $6, $7)
+		insert into tasks(user_id, title, text, status, due_at, remind_at, notified_at, forward_meta)
+		values ($1, $2, $3, $4, $5, $6, $7, $8)
 		returning id, created_at, updated_at`,
 		t.UserID,
+		t.Title,
 		t.Text,
 		t.Status,
 		t.DueAt,
@@ -281,7 +303,7 @@ func (s *Store) MarkDone(id int64) (domain.Task, error) {
 		set status = $1,
 			updated_at = now()
 		where id = $2
-		returning id, user_id, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at`,
+		returning id, user_id, title, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at`,
 		domain.TaskStatusDone,
 		id,
 	)
@@ -304,7 +326,7 @@ func (s *Store) SetDue(id int64, dueAt *time.Time) (domain.Task, error) {
 		set due_at = $1,
 			updated_at = now()
 		where id = $2
-		returning id, user_id, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at`,
+		returning id, user_id, title, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at`,
 		dueAt,
 		id,
 	)
@@ -328,7 +350,7 @@ func (s *Store) SetRemind(id int64, remindAt *time.Time) (domain.Task, error) {
 			notified_at = null,
 			updated_at = now()
 		where id = $2
-		returning id, user_id, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at`,
+		returning id, user_id, title, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at`,
 		remindAt,
 		id,
 	)
@@ -348,14 +370,16 @@ func (s *Store) UpdateTask(t domain.Task) (domain.Task, error) {
 	}
 	row := s.db.QueryRow(`
 		update tasks
-		set text = $1,
-			status = $2,
-			due_at = $3,
-			remind_at = $4,
-			notified_at = $5,
+		set title = $1,
+			text = $2,
+			status = $3,
+			due_at = $4,
+			remind_at = $5,
+			notified_at = $6,
 			updated_at = now()
-		where id = $6
+		where id = $7
 		returning updated_at`,
+		t.Title,
 		t.Text,
 		t.Status,
 		t.DueAt,
@@ -384,7 +408,7 @@ func (s *Store) ListDueForNotify(now time.Time) ([]domain.Task, error) {
 			and remind_at is not null
 			and remind_at <= $1
 			and notified_at is null
-		returning id, user_id, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at`,
+		returning id, user_id, title, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at`,
 		now,
 		domain.TaskStatusActive,
 	)

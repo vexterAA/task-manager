@@ -30,7 +30,7 @@ func formatTaskLine(t domain.Task) string {
 }
 
 func formatTaskLineWithAttachments(t domain.Task, attachments int) string {
-	line := fmt.Sprintf("Задача #%d: %s", t.ID, t.Text)
+	line := fmt.Sprintf("Задача #%d: %s", t.ID, taskLabel(t))
 	if t.DueAt != nil {
 		line += " — до " + formatTime(t.DueAt)
 	}
@@ -38,6 +38,24 @@ func formatTaskLineWithAttachments(t domain.Task, attachments int) string {
 		line += fmt.Sprintf(" · 📎 %d", attachments)
 	}
 	return line
+}
+
+func formatTaskSummaryLine(index int, t domain.Task, attachments int) string {
+	line := fmt.Sprintf("%d. %s", index, taskLabel(t))
+	if t.DueAt != nil {
+		line += " — до " + formatTime(t.DueAt)
+	}
+	if attachments > 0 {
+		line += fmt.Sprintf(" · 📎 %d", attachments)
+	}
+	return line
+}
+
+func taskLabel(t domain.Task) string {
+	if strings.TrimSpace(t.Title) != "" {
+		return t.Title
+	}
+	return t.Text
 }
 
 func formatTime(t *time.Time) string {
@@ -67,6 +85,16 @@ func taskInlineKeyboard(id int64) *InlineKeyboardMarkup {
 	}
 }
 
+func listPickInlineKeyboard() *InlineKeyboardMarkup {
+	return &InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{
+				{Text: "🔢 Ввести номер", CallbackData: "t:pick"},
+			},
+		},
+	}
+}
+
 func doneInlineKeyboard() *InlineKeyboardMarkup {
 	return &InlineKeyboardMarkup{
 		InlineKeyboard: [][]InlineKeyboardButton{
@@ -89,6 +117,9 @@ func deletedInlineKeyboard() *InlineKeyboardMarkup {
 
 func parseTaskCallback(data string) (string, int64, bool) {
 	parts := strings.Split(data, ":")
+	if len(parts) == 2 && parts[0] == "t" && parts[1] == "pick" {
+		return "pick", 0, true
+	}
 	if len(parts) != 3 || parts[0] != "t" {
 		return "", 0, false
 	}
