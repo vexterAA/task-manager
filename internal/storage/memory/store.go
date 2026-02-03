@@ -244,6 +244,33 @@ func (s *Store) ListDueForNotify(now time.Time) ([]domain.Task, error) {
 	return out, nil
 }
 
+func (s *Store) ListOverdueForNotify(now time.Time) ([]domain.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now = now.UTC()
+	out := make([]domain.Task, 0)
+	for id, t := range s.tasks {
+		if t.Status != domain.TaskStatusActive {
+			continue
+		}
+		if t.DueAt == nil || t.DueAt.After(now) {
+			continue
+		}
+		if t.RemindAt != nil {
+			continue
+		}
+		if t.NotifiedAt != nil {
+			continue
+		}
+		t.NotifiedAt = &now
+		t.UpdatedAt = now
+		s.tasks[id] = t
+		out = append(out, t)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 func (s *Store) CreateAttachment(a domain.Attachment) (domain.Attachment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

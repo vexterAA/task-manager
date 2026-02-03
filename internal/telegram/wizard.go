@@ -480,6 +480,7 @@ type taskDraft struct {
 	ForwardMeta           json.RawMessage   `json:"forward_meta,omitempty"`
 	Attachments           []draftAttachment `json:"attachments,omitempty"`
 	ListTaskIDs           []int64           `json:"list_task_ids,omitempty"`
+	EditTaskID            int64             `json:"edit_task_id,omitempty"`
 }
 
 func (b *Bot) loadSession(userID int64) (domain.UserSession, taskDraft) {

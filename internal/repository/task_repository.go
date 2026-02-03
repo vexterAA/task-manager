@@ -17,4 +17,5 @@ type TaskRepository interface {
 	SetDue(id int64, dueAt *time.Time) (domain.Task, error)
 	SetRemind(id int64, remindAt *time.Time) (domain.Task, error)
 	ListDueForNotify(now time.Time) ([]domain.Task, error)
+	ListOverdueForNotify(now time.Time) ([]domain.Task, error)
 }

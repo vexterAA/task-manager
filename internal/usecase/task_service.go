@@ -134,6 +134,10 @@ func (s *TaskService) ListDueForNotify(now time.Time) ([]domain.Task, error) {
 	return s.repo.ListDueForNotify(now.UTC())
 }
 
+func (s *TaskService) ListOverdueForNotify(now time.Time) ([]domain.Task, error) {
+	return s.repo.ListOverdueForNotify(now.UTC())
+}
+
 func toUTC(t *time.Time) *time.Time {
 	if t == nil {
 		return nil

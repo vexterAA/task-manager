@@ -134,3 +134,17 @@ func parseTaskCallback(data string) (string, int64, bool) {
 		return "", 0, false
 	}
 }
+
+func parseTaskEditCallback(data string) (string, string, bool) {
+	parts := strings.Split(data, ":")
+	if len(parts) < 2 || parts[0] != "te" {
+		return "", "", false
+	}
+	if len(parts) == 2 {
+		return parts[1], "", true
+	}
+	if len(parts) == 3 {
+		return parts[1], parts[2], true
+	}
+	return "", "", false
+}

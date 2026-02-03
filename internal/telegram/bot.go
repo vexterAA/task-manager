@@ -98,6 +98,9 @@ func (b *Bot) handleMessage(ctx context.Context, msg *Message) error {
 		if session.State == domain.SessionStateSettingsTZ || session.State == domain.SessionStateSettingsRemind {
 			return b.handleSettingsMessage(ctx, msg, user, tz, session, draft)
 		}
+		if session.State == domain.SessionStateTaskEditDeadline || session.State == domain.SessionStateTaskEditRemind {
+			return b.handleTaskEditMessage(ctx, msg, user, tz, session, draft)
+		}
 		if session.State == domain.SessionStatePickTask {
 			return b.handlePickTaskMessage(ctx, msg, user, tz, session, draft)
 		}
@@ -211,6 +214,9 @@ func (b *Bot) handleCallback(ctx context.Context, cb *CallbackQuery) error {
 	if cb.Message == nil {
 		return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
 	}
+	if action, args, ok := parseTaskEditCallback(cb.Data); ok {
+		return b.handleTaskEditCallback(ctx, cb, action, args)
+	}
 	if action, args, ok := parseSettingsCallback(cb.Data); ok {
 		return b.handleSettingsCallback(ctx, cb, action, args)
 	}
@@ -268,8 +274,14 @@ func (b *Bot) handleCallback(ctx context.Context, cb *CallbackQuery) error {
 		}
 		return b.client.AnswerCallbackQuery(ctx, cb.ID, fmt.Sprintf("Удалил: #%d", id))
 	case "rem":
-		_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "Экран напоминаний пока не готов.")
-		return nil
+		session, draft := b.loadSession(user.ID)
+		session.State = domain.SessionStateTaskEditMenu
+		draft.EditTaskID = id
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+		return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, "Что изменить?", taskEditInlineKeyboard())
 	case "snooze":
 		now := time.Now().UTC().Add(15 * time.Minute)
 		if _, err := b.taskService.SetRemind(id, &now, tz); err != nil {
@@ -412,6 +424,296 @@ func settingsRemindKeyboard() *InlineKeyboardMarkup {
 	}
 }
 
+func taskEditInlineKeyboard() *InlineKeyboardMarkup {
+	return &InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{
+				{Text: "⏰ Дедлайн", CallbackData: "te:deadline"},
+				{Text: "🔔 Напоминания", CallbackData: "te:remind"},
+			},
+			{
+				{Text: "Отмена", CallbackData: "te:cancel"},
+			},
+		},
+	}
+}
+
+func taskEditDeadlineKeyboard() *InlineKeyboardMarkup {
+	return &InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{
+				{Text: "Без дедлайна", CallbackData: "te:deadline:none"},
+				{Text: "Сегодня", CallbackData: "te:deadline:today"},
+			},
+			{
+				{Text: "Завтра", CallbackData: "te:deadline:tomorrow"},
+				{Text: "Ввести дату…", CallbackData: "te:deadline:input"},
+			},
+			{
+				{Text: "Назад", CallbackData: "te:back"},
+			},
+		},
+	}
+}
+
+func taskEditRemindKeyboard(hasDefault bool) *InlineKeyboardMarkup {
+	rows := make([][]InlineKeyboardButton, 0, 5)
+	rows = append(rows, []InlineKeyboardButton{
+		{Text: "Не напоминать", CallbackData: "te:remind:none"},
+	})
+	if hasDefault {
+		rows = append(rows, []InlineKeyboardButton{
+			{Text: "По умолчанию", CallbackData: "te:remind:default"},
+		})
+	}
+	rows = append(rows, []InlineKeyboardButton{
+		{Text: "За 10 мин", CallbackData: "te:remind:10m"},
+		{Text: "За 1 час", CallbackData: "te:remind:1h"},
+	})
+	rows = append(rows, []InlineKeyboardButton{
+		{Text: "Каждые 2 часа", CallbackData: "te:remind:2h"},
+		{Text: "Каждый день", CallbackData: "te:remind:1d"},
+	})
+	rows = append(rows, []InlineKeyboardButton{
+		{Text: "Свой интервал…", CallbackData: "te:remind:custom"},
+		{Text: "Назад", CallbackData: "te:back"},
+	})
+	return &InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func (b *Bot) handleTaskEditCallback(ctx context.Context, cb *CallbackQuery, action, args string) error {
+	user, err := b.users.GetByTelegramID(cb.From.ID)
+	if err != nil {
+		_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "Не нашёл пользователя.")
+		return err
+	}
+	session, draft := b.loadSession(user.ID)
+	if draft.EditTaskID == 0 {
+		return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+	}
+	tz := user.Timezone
+	if tz == "" {
+		tz = "UTC"
+	}
+	switch action {
+	case "cancel":
+		draft.EditTaskID = 0
+		draft.PendingInput = ""
+		draft.PendingDate = ""
+		session.State = domain.SessionStateIdle
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+		return b.sendMenuText(ctx, cb.Message.Chat.ID, "Ок.")
+	case "back":
+		session.State = domain.SessionStateTaskEditMenu
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+		return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, "Что изменить?", taskEditInlineKeyboard())
+	case "deadline":
+		if args == "" {
+			session.State = domain.SessionStateTaskEditDeadline
+			if err := b.saveSession(session, draft); err != nil {
+				return err
+			}
+			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+			return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, "Дедлайн:", taskEditDeadlineKeyboard())
+		}
+		switch args {
+		case "none":
+			if _, err := b.taskService.SetDue(draft.EditTaskID, nil, tz); err != nil {
+				return err
+			}
+			draft.EditTaskID = 0
+			session.State = domain.SessionStateIdle
+			if err := b.saveSession(session, draft); err != nil {
+				return err
+			}
+			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+			return b.sendMenuText(ctx, cb.Message.Chat.ID, "Дедлайн убрал.")
+		case "today":
+			date := time.Now().In(usecaseTimeLocation(tz))
+			draft.PendingInput = "deadline_time"
+			draft.PendingDate = date.Format("2006-01-02")
+			session.State = domain.SessionStateTaskEditDeadline
+			if err := b.saveSession(session, draft); err != nil {
+				return err
+			}
+			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "Сегодня")
+			return b.sendMenuText(ctx, cb.Message.Chat.ID, "Введи время (например 17:00 или 17.00)")
+		case "tomorrow":
+			date := time.Now().In(usecaseTimeLocation(tz)).Add(24 * time.Hour)
+			draft.PendingInput = "deadline_time"
+			draft.PendingDate = date.Format("2006-01-02")
+			session.State = domain.SessionStateTaskEditDeadline
+			if err := b.saveSession(session, draft); err != nil {
+				return err
+			}
+			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "Завтра")
+			return b.sendMenuText(ctx, cb.Message.Chat.ID, "Введи время (например 17:00 или 17.00)")
+		case "input":
+			draft.PendingInput = "deadline"
+			session.State = domain.SessionStateTaskEditDeadline
+			if err := b.saveSession(session, draft); err != nil {
+				return err
+			}
+			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+			return b.sendMenuText(ctx, cb.Message.Chat.ID, "Напиши по‑человечески: сегодня 18:30, завтра 9, через 2ч, 12.02 18:00")
+		default:
+			return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+		}
+	case "remind":
+		if args == "" {
+			session.State = domain.SessionStateTaskEditRemind
+			if err := b.saveSession(session, draft); err != nil {
+				return err
+			}
+			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+			return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, "Напоминания:", taskEditRemindKeyboard(user.DefaultRemindKind != ""))
+		}
+		task, err := b.taskService.GetByID(draft.EditTaskID, tz)
+		if err != nil {
+			return err
+		}
+		switch args {
+		case "none":
+			if _, err := b.taskService.SetRemind(draft.EditTaskID, nil, tz); err != nil {
+				return err
+			}
+		case "default":
+			if user.DefaultRemindKind == "" {
+				return b.client.AnswerCallbackQuery(ctx, cb.ID, "Нет дефолта.")
+			}
+			if user.DefaultRemindKind == "before" {
+				if task.DueAt == nil {
+					return b.client.AnswerCallbackQuery(ctx, cb.ID, "Нужен дедлайн.")
+				}
+				dur, err := parseIntervalInput(user.DefaultRemindInterval)
+				if err != nil {
+					return err
+				}
+				rt := task.DueAt.Add(-dur)
+				if _, err := b.taskService.SetRemind(draft.EditTaskID, &rt, tz); err != nil {
+					return err
+				}
+			} else if user.DefaultRemindKind == "interval" {
+				dur, err := parseIntervalInput(user.DefaultRemindInterval)
+				if err != nil {
+					return err
+				}
+				rt := time.Now().In(usecaseTimeLocation(tz)).Add(dur)
+				if _, err := b.taskService.SetRemind(draft.EditTaskID, &rt, tz); err != nil {
+					return err
+				}
+			} else {
+				if _, err := b.taskService.SetRemind(draft.EditTaskID, nil, tz); err != nil {
+					return err
+				}
+			}
+		case "10m", "1h":
+			if task.DueAt == nil {
+				return b.client.AnswerCallbackQuery(ctx, cb.ID, "Нужен дедлайн.")
+			}
+			dur, err := parseIntervalInput(args)
+			if err != nil {
+				return err
+			}
+			rt := task.DueAt.Add(-dur)
+			if _, err := b.taskService.SetRemind(draft.EditTaskID, &rt, tz); err != nil {
+				return err
+			}
+		case "2h", "1d":
+			dur, err := parseIntervalInput(args)
+			if err != nil {
+				return err
+			}
+			rt := time.Now().In(usecaseTimeLocation(tz)).Add(dur)
+			if _, err := b.taskService.SetRemind(draft.EditTaskID, &rt, tz); err != nil {
+				return err
+			}
+		case "custom":
+			draft.PendingInput = "remind_interval"
+			session.State = domain.SessionStateTaskEditRemind
+			if err := b.saveSession(session, draft); err != nil {
+				return err
+			}
+			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+			return b.sendMenuText(ctx, cb.Message.Chat.ID, intervalHint())
+		default:
+			return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+		}
+		draft.EditTaskID = 0
+		draft.PendingInput = ""
+		draft.PendingDate = ""
+		session.State = domain.SessionStateIdle
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+		return b.sendMenuText(ctx, cb.Message.Chat.ID, "Напоминания обновил.")
+	default:
+		return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+	}
+}
+
+func (b *Bot) handleTaskEditMessage(ctx context.Context, msg *Message, user domain.User, tz string, session domain.UserSession, draft taskDraft) error {
+	if draft.EditTaskID == 0 {
+		return nil
+	}
+	switch session.State {
+	case domain.SessionStateTaskEditDeadline:
+		if draft.PendingInput == "" {
+			return nil
+		}
+		dt, _, err := parseDeadlineInput(msg.Text, tz, draft.PendingInput, draft.PendingDate)
+		if err != nil {
+			switch {
+			case errors.Is(err, errDeadlineTimeOnly):
+				return b.sendMenuText(ctx, msg.Chat.ID, "Время в формате 17:00 или 17.00")
+			case errors.Is(err, errDeadlinePast):
+				return b.sendMenuText(ctx, msg.Chat.ID, "Эта дата уже прошла. Дай дату в будущем.")
+			default:
+				return b.sendMenuText(ctx, msg.Chat.ID, "Не понял дату. Примеры: сегодня 18:30, завтра 9, через 2ч, 12.02 18:00")
+			}
+		}
+		if _, err := b.taskService.SetDue(draft.EditTaskID, &dt, tz); err != nil {
+			return err
+		}
+		draft.EditTaskID = 0
+		draft.PendingInput = ""
+		draft.PendingDate = ""
+		session.State = domain.SessionStateIdle
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		return b.sendMenuText(ctx, msg.Chat.ID, "Дедлайн обновлён.")
+	case domain.SessionStateTaskEditRemind:
+		if draft.PendingInput != "remind_interval" {
+			return nil
+		}
+		dur, err := parseIntervalInput(msg.Text)
+		if err != nil || dur <= 0 {
+			return b.sendMenuText(ctx, msg.Chat.ID, intervalHint())
+		}
+		rt := time.Now().In(usecaseTimeLocation(tz)).Add(dur)
+		if _, err := b.taskService.SetRemind(draft.EditTaskID, &rt, tz); err != nil {
+			return err
+		}
+		draft.EditTaskID = 0
+		draft.PendingInput = ""
+		draft.PendingDate = ""
+		session.State = domain.SessionStateIdle
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		return b.sendMenuText(ctx, msg.Chat.ID, "Напоминания обновил.")
+	default:
+		return nil
+	}
+}
 func (b *Bot) handleSettingsCallback(ctx context.Context, cb *CallbackQuery, action, args string) error {
 	user, err := b.users.GetByTelegramID(cb.From.ID)
 	if err != nil {
@@ -557,6 +859,10 @@ func (b *Bot) processReminders(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	overdue, err := b.taskService.ListOverdueForNotify(now)
+	if err != nil {
+		return err
+	}
 	for _, t := range items {
 		user, err := b.users.GetUserByID(t.UserID)
 		if err != nil {
@@ -577,6 +883,28 @@ func (b *Bot) processReminders(ctx context.Context) error {
 		text := "🔔 Напоминание\n" + formatTaskLineWithAttachments(toTaskInLocation(t, loc), len(attachments))
 		if err := b.client.SendMessageWithMarkup(ctx, user.ChatID, text, taskInlineKeyboard(t.ID)); err != nil {
 			log.Printf("notify send error: %v", err)
+		}
+	}
+	for _, t := range overdue {
+		user, err := b.users.GetUserByID(t.UserID)
+		if err != nil {
+			continue
+		}
+		tz := user.Timezone
+		if tz == "" {
+			tz = "UTC"
+		}
+		loc, err := usecase.LocationFromTZ(tz)
+		if err != nil {
+			loc = time.UTC
+		}
+		attachments, err := b.attachments.ListAttachmentsByTaskID(t.ID)
+		if err != nil {
+			attachments = nil
+		}
+		text := "⏰ Дедлайн просрочен\n" + formatTaskLineWithAttachments(toTaskInLocation(t, loc), len(attachments))
+		if err := b.client.SendMessageWithMarkup(ctx, user.ChatID, text, taskInlineKeyboard(t.ID)); err != nil {
+			log.Printf("overdue send error: %v", err)
 		}
 	}
 	return nil

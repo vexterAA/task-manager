@@ -456,6 +456,38 @@ func (s *Store) ListDueForNotify(now time.Time) ([]domain.Task, error) {
 	return res, rows.Err()
 }
 
+func (s *Store) ListOverdueForNotify(now time.Time) ([]domain.Task, error) {
+	if s.db == nil {
+		return nil, errors.New("db")
+	}
+	rows, err := s.db.Query(`
+		update tasks
+		set notified_at = $1,
+			updated_at = $1
+		where status = $2
+			and due_at is not null
+			and due_at <= $1
+			and remind_at is null
+			and notified_at is null
+		returning id, user_id, title, text, status, due_at, remind_at, notified_at, forward_meta, created_at, updated_at`,
+		now,
+		domain.TaskStatusActive,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var res []domain.Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, t)
+	}
+	return res, rows.Err()
+}
+
 func (s *Store) DeleteTask(id int64) error {
 	if s.db == nil {
 		return errors.New("db")
