@@ -203,15 +203,78 @@ func weekdayFromRu(s string) (time.Weekday, bool) {
 }
 
 func parseDurationFlexible(input string) (time.Duration, error) {
-	if strings.HasSuffix(input, "d") {
-		daysPart := strings.TrimSuffix(input, "d")
-		days, err := strconv.Atoi(daysPart)
+	s := strings.ToLower(strings.TrimSpace(input))
+	if s == "" {
+		return 0, errors.New("empty")
+	}
+	s = strings.ReplaceAll(s, ",", ".")
+	if d, err := time.ParseDuration(s); err == nil {
+		return d, nil
+	}
+
+	unitSeconds := map[string]float64{
+		"s":       1,
+		"sec":     1,
+		"secs":    1,
+		"second":  1,
+		"seconds": 1,
+		"сек":     1,
+		"секунд":  1,
+		"секунда": 1,
+		"секунды": 1,
+
+		"m":       60,
+		"min":     60,
+		"mins":    60,
+		"minute":  60,
+		"minutes": 60,
+		"м":       60,
+		"мин":     60,
+		"минута":  60,
+		"минуты":  60,
+		"минут":   60,
+
+		"h":     3600,
+		"hr":    3600,
+		"hour":  3600,
+		"hours": 3600,
+		"ч":     3600,
+		"час":   3600,
+		"часа":  3600,
+		"часов": 3600,
+
+		"d":    86400,
+		"day":  86400,
+		"days": 86400,
+		"д":    86400,
+		"день": 86400,
+		"дня":  86400,
+		"дней": 86400,
+	}
+
+	re := regexp.MustCompile(`(\d+(?:\.\d+)?)\s*([a-zа-я]+)`)
+	matches := re.FindAllStringSubmatch(s, -1)
+	if len(matches) == 0 {
+		return 0, errors.New("unknown duration")
+	}
+
+	totalSeconds := 0.0
+	for _, m := range matches {
+		val, err := strconv.ParseFloat(m[1], 64)
 		if err != nil {
 			return 0, err
 		}
-		return time.Duration(days) * 24 * time.Hour, nil
+		unit := m[2]
+		sec, ok := unitSeconds[unit]
+		if !ok {
+			return 0, errors.New("unknown unit")
+		}
+		totalSeconds += val * sec
 	}
-	return time.ParseDuration(input)
+	if totalSeconds <= 0 {
+		return 0, errors.New("invalid duration")
+	}
+	return time.Duration(totalSeconds * float64(time.Second)), nil
 }
 
 func parseDueArgs(args, tz string) (int64, *time.Time, error) {

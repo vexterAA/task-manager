@@ -67,51 +67,43 @@ func (b *Bot) handleWizardMessage(ctx context.Context, msg *Message, user domain
 		}
 		return b.sendMenuWithInline(ctx, msg.Chat.ID, "Нужен дедлайн?", deadlineInlineKeyboard())
 	case domain.SessionStateCreateDeadline:
-		switch draft.PendingInput {
-		case "deadline":
-			dt, noDeadline, err := parseFlexibleDateTime(msg.Text, tz)
-			if err != nil {
+		if draft.PendingInput == "" {
+			return nil
+		}
+		dt, noDeadline, err := parseDeadlineInput(msg.Text, tz, draft.PendingInput, draft.PendingDate)
+		if err != nil {
+			switch {
+			case errors.Is(err, errDeadlineTimeOnly):
+				return b.sendMenuText(ctx, msg.Chat.ID, "Время в формате 17:00 или 17.00")
+			case errors.Is(err, errDeadlinePast):
+				return b.sendMenuText(ctx, msg.Chat.ID, "Эта дата уже прошла. Дай дату в будущем.")
+			default:
 				return b.sendMenuText(ctx, msg.Chat.ID, "Не понял дату. Примеры: сегодня 18:30, завтра 9, через 2ч, 12.02 18:00")
 			}
-			if noDeadline {
-				draft.Deadline = nil
-			} else {
-				draft.Deadline = &dt
-			}
-			draft.PendingInput = ""
-			draft.PendingDate = ""
-		case "deadline_time":
-			h, m, ok := parseTimeOfDay(msg.Text)
-			if !ok {
-				return b.sendMenuText(ctx, msg.Chat.ID, "Время в формате 17:00 или 17.00")
-			}
-			loc, err := usecase.LocationFromTZ(tz)
-			if err != nil {
-				return err
-			}
-			date, err := time.ParseInLocation("2006-01-02", draft.PendingDate, loc)
-			if err != nil {
-				return b.sendMenuText(ctx, msg.Chat.ID, "Не понял дату, попробуй ещё раз.")
-			}
-			dt := time.Date(date.Year(), date.Month(), date.Day(), h, m, 0, 0, loc)
+		}
+		if noDeadline {
+			draft.Deadline = nil
+		} else {
 			draft.Deadline = &dt
-			draft.PendingInput = ""
-			draft.PendingDate = ""
-		default:
-			return nil
+		}
+		draft.PendingInput = ""
+		draft.PendingDate = ""
+		if draft.RemindKind == "" && user.DefaultRemindKind != "" {
+			draft.DefaultRemindKind = user.DefaultRemindKind
+			draft.DefaultRemindInterval = user.DefaultRemindInterval
 		}
 		session.State = domain.SessionStateCreateRemind
 		if err := b.saveSession(session, draft); err != nil {
 			return err
 		}
-		return b.sendMenuWithInline(ctx, msg.Chat.ID, "Напоминания?", remindInlineKeyboard())
+		return b.sendMenuWithInline(ctx, msg.Chat.ID, "Напоминания?", remindInlineKeyboard(draft.DefaultRemindKind != ""))
 	case domain.SessionStateCreateRemind:
 		if draft.PendingInput != "remind_interval" {
 			return nil
 		}
-		dur, err := parseDurationFlexible(strings.TrimSpace(msg.Text))
+		dur, err := parseIntervalInput(msg.Text)
 		if err != nil || dur <= 0 {
-			return b.sendMenuText(ctx, msg.Chat.ID, "Формат интервала: 15m, 2h, 1d")
+			return b.sendMenuText(ctx, msg.Chat.ID, intervalHint())
 		}
 		draft.RemindKind = "interval"
 		draft.RemindInterval = dur.String()
@@ -183,7 +175,7 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cb *CallbackQuery, actio
 				return err
 			}
 			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
-			return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, "Напоминания?", remindInlineKeyboard())
+			return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, "Напоминания?", remindInlineKeyboard(draft.DefaultRemindKind != ""))
 		case "today":
 			date := time.Now().In(usecaseTimeLocation(tz))
 			draft.PendingInput = "deadline_time"
@@ -226,6 +218,18 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cb *CallbackQuery, actio
 			}
 			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
 			return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, draftSummary(draft), confirmInlineKeyboard())
+		case "default":
+			if draft.DefaultRemindKind == "" {
+				return b.client.AnswerCallbackQuery(ctx, cb.ID, "Нет дефолта.")
+			}
+			draft.RemindKind = draft.DefaultRemindKind
+			draft.RemindInterval = draft.DefaultRemindInterval
+			session.State = domain.SessionStateCreateConfirm
+			if err := b.saveSession(session, draft); err != nil {
+				return err
+			}
+			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+			return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, draftSummary(draft), confirmInlineKeyboard())
 		case "10m", "1h":
 			if draft.Deadline == nil {
 				return b.client.AnswerCallbackQuery(ctx, cb.ID, "Нужен дедлайн.")
@@ -253,7 +257,7 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cb *CallbackQuery, actio
 				return err
 			}
 			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
-			return b.sendMenuText(ctx, cb.Message.Chat.ID, "Пришли интервал: 15m, 2h, 1d")
+			return b.sendMenuText(ctx, cb.Message.Chat.ID, intervalHint())
 		default:
 			return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
 		}
@@ -327,7 +331,7 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cb *CallbackQuery, actio
 				return err
 			}
 			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
-			return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, "Напоминания?", remindInlineKeyboard())
+			return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, "Напоминания?", remindInlineKeyboard(draft.DefaultRemindKind != ""))
 		default:
 			return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
 		}
@@ -354,26 +358,29 @@ func deadlineInlineKeyboard() *InlineKeyboardMarkup {
 	}
 }
 
-func remindInlineKeyboard() *InlineKeyboardMarkup {
-	return &InlineKeyboardMarkup{
-		InlineKeyboard: [][]InlineKeyboardButton{
-			{
-				{Text: "Не напоминать", CallbackData: "w:remind:none"},
-			},
-			{
-				{Text: "За 10 мин", CallbackData: "w:remind:10m"},
-				{Text: "За 1 час", CallbackData: "w:remind:1h"},
-			},
-			{
-				{Text: "Каждые 2 часа", CallbackData: "w:remind:2h"},
-				{Text: "Каждый день", CallbackData: "w:remind:1d"},
-			},
-			{
-				{Text: "Свой интервал…", CallbackData: "w:remind:custom"},
-				{Text: "Отмена", CallbackData: "w:cancel"},
-			},
-		},
+func remindInlineKeyboard(hasDefault bool) *InlineKeyboardMarkup {
+	rows := make([][]InlineKeyboardButton, 0, 5)
+	rows = append(rows, []InlineKeyboardButton{
+		{Text: "Не напоминать", CallbackData: "w:remind:none"},
+	})
+	if hasDefault {
+		rows = append(rows, []InlineKeyboardButton{
+			{Text: "По умолчанию", CallbackData: "w:remind:default"},
+		})
 	}
+	rows = append(rows, []InlineKeyboardButton{
+		{Text: "За 10 мин", CallbackData: "w:remind:10m"},
+		{Text: "За 1 час", CallbackData: "w:remind:1h"},
+	})
+	rows = append(rows, []InlineKeyboardButton{
+		{Text: "Каждые 2 часа", CallbackData: "w:remind:2h"},
+		{Text: "Каждый день", CallbackData: "w:remind:1d"},
+	})
+	rows = append(rows, []InlineKeyboardButton{
+		{Text: "Свой интервал…", CallbackData: "w:remind:custom"},
+		{Text: "Отмена", CallbackData: "w:cancel"},
+	})
+	return &InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func confirmInlineKeyboard() *InlineKeyboardMarkup {
@@ -422,6 +429,20 @@ func editInlineKeyboard() *InlineKeyboardMarkup {
 	}
 }
 
+func parseSettingsCallback(data string) (string, string, bool) {
+	parts := strings.Split(data, ":")
+	if len(parts) < 2 || parts[0] != "s" {
+		return "", "", false
+	}
+	if len(parts) == 2 {
+		return parts[1], "", true
+	}
+	if len(parts) == 3 {
+		return parts[1], parts[2], true
+	}
+	return "", "", false
+}
+
 func parseWizardCallback(data string) (string, string, bool) {
 	parts := strings.Split(data, ":")
 	if len(parts) < 2 || parts[0] != "w" {
@@ -447,16 +468,18 @@ type draftAttachment struct {
 }
 
 type taskDraft struct {
-	Title          string            `json:"title,omitempty"`
-	Text           string            `json:"text"`
-	Deadline       *time.Time        `json:"deadline,omitempty"`
-	RemindKind     string            `json:"remind_kind,omitempty"`
-	RemindInterval string            `json:"remind_interval,omitempty"`
-	PendingInput   string            `json:"pending_input,omitempty"`
-	PendingDate    string            `json:"pending_date,omitempty"`
-	ForwardMeta    json.RawMessage   `json:"forward_meta,omitempty"`
-	Attachments    []draftAttachment `json:"attachments,omitempty"`
-	ListTaskIDs    []int64           `json:"list_task_ids,omitempty"`
+	Title                 string            `json:"title,omitempty"`
+	Text                  string            `json:"text"`
+	Deadline              *time.Time        `json:"deadline,omitempty"`
+	RemindKind            string            `json:"remind_kind,omitempty"`
+	RemindInterval        string            `json:"remind_interval,omitempty"`
+	DefaultRemindKind     string            `json:"default_remind_kind,omitempty"`
+	DefaultRemindInterval string            `json:"default_remind_interval,omitempty"`
+	PendingInput          string            `json:"pending_input,omitempty"`
+	PendingDate           string            `json:"pending_date,omitempty"`
+	ForwardMeta           json.RawMessage   `json:"forward_meta,omitempty"`
+	Attachments           []draftAttachment `json:"attachments,omitempty"`
+	ListTaskIDs           []int64           `json:"list_task_ids,omitempty"`
 }
 
 func (b *Bot) loadSession(userID int64) (domain.UserSession, taskDraft) {
@@ -653,4 +676,58 @@ func usecaseTimeLocation(tz string) *time.Location {
 		return time.UTC
 	}
 	return loc
+}
+
+func isPastTime(t time.Time, tz string) bool {
+	loc, err := usecase.LocationFromTZ(tz)
+	if err != nil {
+		loc = time.UTC
+	}
+	now := time.Now().In(loc).Add(-1 * time.Minute)
+	return t.Before(now)
+}
+
+var (
+	errDeadlineTimeOnly = errors.New("deadline_time_only")
+	errDeadlinePast     = errors.New("deadline_past")
+)
+
+func parseDeadlineInput(input, tz, pendingInput, pendingDate string) (time.Time, bool, error) {
+	switch pendingInput {
+	case "deadline_time":
+		h, m, ok := parseTimeOfDay(input)
+		if !ok {
+			return time.Time{}, false, errDeadlineTimeOnly
+		}
+		loc, err := usecase.LocationFromTZ(tz)
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		date, err := time.ParseInLocation("2006-01-02", pendingDate, loc)
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		dt := time.Date(date.Year(), date.Month(), date.Day(), h, m, 0, 0, loc)
+		if isPastTime(dt, tz) {
+			return time.Time{}, false, errDeadlinePast
+		}
+		return dt, false, nil
+	default:
+		dt, noDeadline, err := parseFlexibleDateTime(input, tz)
+		if err != nil {
+			return time.Time{}, noDeadline, err
+		}
+		if !noDeadline && isPastTime(dt, tz) {
+			return time.Time{}, false, errDeadlinePast
+		}
+		return dt, noDeadline, nil
+	}
+}
+
+func parseIntervalInput(input string) (time.Duration, error) {
+	return parseDurationFlexible(strings.TrimSpace(input))
+}
+
+func intervalHint() string {
+	return "Интервал: 10m, 2h30m, 1d, 2ч, 45м"
 }

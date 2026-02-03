@@ -95,6 +95,9 @@ func (b *Bot) handleMessage(ctx context.Context, msg *Message) error {
 	session, draft := b.loadSession(user.ID)
 
 	if command == "" {
+		if session.State == domain.SessionStateSettingsTZ || session.State == domain.SessionStateSettingsRemind {
+			return b.handleSettingsMessage(ctx, msg, user, tz, session, draft)
+		}
 		if session.State == domain.SessionStatePickTask {
 			return b.handlePickTaskMessage(ctx, msg, user, tz, session, draft)
 		}
@@ -136,15 +139,57 @@ func (b *Bot) handleMessage(ctx context.Context, msg *Message) error {
 		}
 		return b.sendMenuText(ctx, msg.Chat.ID, "Чтобы открыть задачу, нажми «Ввести номер».")
 	case "today":
-		return b.sendMenuText(ctx, msg.Chat.ID, "Пока не сделал фильтр «сегодня/просрочено».")
+		items, err := b.taskService.ListActive(user.ID, tz)
+		if err != nil {
+			return b.sendMenuText(ctx, msg.Chat.ID, "Не смог получить список задач.")
+		}
+		now := time.Now().In(usecaseTimeLocation(tz))
+		filtered := make([]domain.Task, 0)
+		for _, t := range items {
+			if t.DueAt == nil {
+				continue
+			}
+			due := t.DueAt.In(now.Location())
+			if isSameDay(due, now) || due.Before(now) {
+				filtered = append(filtered, t)
+			}
+		}
+		if len(filtered) == 0 {
+			return b.sendMenuText(ctx, msg.Chat.ID, "Сегодня и просрочено — пусто.")
+		}
+		lines := make([]string, 0, len(filtered)+1)
+		lines = append(lines, "Сегодня и просрочено:")
+		draft.ListTaskIDs = make([]int64, 0, len(filtered))
+		for i, t := range filtered {
+			attachments, err := b.attachments.ListAttachmentsByTaskID(t.ID)
+			if err != nil {
+				return err
+			}
+			draft.ListTaskIDs = append(draft.ListTaskIDs, t.ID)
+			lines = append(lines, formatTaskSummaryLine(i+1, t, len(attachments)))
+		}
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		if err := b.client.SendMessageWithMarkup(ctx, msg.Chat.ID, strings.Join(lines, "\n"), listPickInlineKeyboard()); err != nil {
+			return err
+		}
+		return b.sendMenuText(ctx, msg.Chat.ID, "Чтобы открыть задачу, нажми «Ввести номер».")
 	case "settings":
-		return b.sendMenuText(ctx, msg.Chat.ID, "Настройки позже: таймзона и дефолтные напоминания.")
+		session.State = domain.SessionStateSettingsMenu
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		return b.sendMenuWithInline(ctx, msg.Chat.ID, "Настройки:", settingsInlineKeyboard())
 	case "help":
 		return b.sendMenuText(ctx, msg.Chat.ID, helpText())
 	case "due":
 		id, dueAt, err := parseDueArgs(args, tz)
 		if err != nil {
 			return b.sendMenuText(ctx, msg.Chat.ID, "Не понял. Пример: 12 2026-02-01 18:00")
+		}
+		if dueAt != nil && isPastTime(*dueAt, tz) {
+			return b.sendMenuText(ctx, msg.Chat.ID, "Эта дата уже прошла. Дай дату в будущем.")
 		}
 		if err := b.ensureTaskOwner(id, user.ID, tz); err != nil {
 			return b.sendMenuText(ctx, msg.Chat.ID, "Задача не найдена.")
@@ -165,6 +210,9 @@ func (b *Bot) handleMessage(ctx context.Context, msg *Message) error {
 func (b *Bot) handleCallback(ctx context.Context, cb *CallbackQuery) error {
 	if cb.Message == nil {
 		return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+	}
+	if action, args, ok := parseSettingsCallback(cb.Data); ok {
+		return b.handleSettingsCallback(ctx, cb, action, args)
 	}
 	if action, args, ok := parseWizardCallback(cb.Data); ok {
 		return b.handleWizardCallback(ctx, cb, action, args)
@@ -326,6 +374,168 @@ func (b *Bot) sendMenuWithInline(ctx context.Context, chatID int64, text string,
 	return b.client.SendMessageWithMarkup(ctx, chatID, text, inline)
 }
 
+func settingsInlineKeyboard() *InlineKeyboardMarkup {
+	return &InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{
+				{Text: "🕒 Таймзона", CallbackData: "s:tz"},
+			},
+			{
+				{Text: "🔔 Дефолтные напоминания", CallbackData: "s:remind"},
+			},
+			{
+				{Text: "Отмена", CallbackData: "s:cancel"},
+			},
+		},
+	}
+}
+
+func settingsRemindKeyboard() *InlineKeyboardMarkup {
+	return &InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{
+				{Text: "Не напоминать", CallbackData: "s:remind:none"},
+			},
+			{
+				{Text: "За 10 мин", CallbackData: "s:remind:10m"},
+				{Text: "За 1 час", CallbackData: "s:remind:1h"},
+			},
+			{
+				{Text: "Каждые 2 часа", CallbackData: "s:remind:2h"},
+				{Text: "Каждый день", CallbackData: "s:remind:1d"},
+			},
+			{
+				{Text: "Свой интервал…", CallbackData: "s:remind:custom"},
+				{Text: "Назад", CallbackData: "s:back"},
+			},
+		},
+	}
+}
+
+func (b *Bot) handleSettingsCallback(ctx context.Context, cb *CallbackQuery, action, args string) error {
+	user, err := b.users.GetByTelegramID(cb.From.ID)
+	if err != nil {
+		_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "Не нашёл пользователя.")
+		return err
+	}
+	session, draft := b.loadSession(user.ID)
+	switch action {
+	case "cancel":
+		session.State = domain.SessionStateIdle
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+		return b.sendMenuText(ctx, cb.Message.Chat.ID, "Ок.")
+	case "back":
+		session.State = domain.SessionStateSettingsMenu
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+		return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, "Настройки:", settingsInlineKeyboard())
+	case "tz":
+		session.State = domain.SessionStateSettingsTZ
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+		return b.sendMenuText(ctx, cb.Message.Chat.ID, "Пришли таймзону. Примеры: Europe/Moscow или +03:00")
+	case "remind":
+		session.State = domain.SessionStateSettingsRemind
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+		return b.sendMenuWithInline(ctx, cb.Message.Chat.ID, "Дефолтные напоминания:", settingsRemindKeyboard())
+	default:
+		if action == "remind" {
+			switch args {
+			case "none":
+				user.DefaultRemindKind = "none"
+				user.DefaultRemindInterval = ""
+			case "10m", "1h":
+				user.DefaultRemindKind = "before"
+				user.DefaultRemindInterval = args
+			case "2h", "1d":
+				user.DefaultRemindKind = "interval"
+				user.DefaultRemindInterval = args
+			case "custom":
+				session.State = domain.SessionStateSettingsRemind
+				if err := b.saveSession(session, draft); err != nil {
+					return err
+				}
+				_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+				return b.sendMenuText(ctx, cb.Message.Chat.ID, intervalHint())
+			default:
+				return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+			}
+			updated, err := b.users.UpdateUser(user)
+			if err != nil {
+				return err
+			}
+			user = updated
+			session.State = domain.SessionStateIdle
+			if err := b.saveSession(session, draft); err != nil {
+				return err
+			}
+			_ = b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+			return b.sendMenuText(ctx, cb.Message.Chat.ID, "Сохранил дефолтные напоминания.")
+		}
+		return b.client.AnswerCallbackQuery(ctx, cb.ID, "")
+	}
+}
+
+func (b *Bot) handleSettingsMessage(ctx context.Context, msg *Message, user domain.User, tz string, session domain.UserSession, draft taskDraft) error {
+	text := strings.TrimSpace(msg.Text)
+	if text == "" {
+		return b.sendMenuText(ctx, msg.Chat.ID, "Напиши значение.")
+	}
+	if strings.EqualFold(text, "отмена") {
+		session.State = domain.SessionStateIdle
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		return b.sendMenuText(ctx, msg.Chat.ID, "Ок.")
+	}
+	switch session.State {
+	case domain.SessionStateSettingsTZ:
+		if _, err := usecase.LocationFromTZ(text); err != nil {
+			return b.sendMenuText(ctx, msg.Chat.ID, "Не понял таймзону. Примеры: Europe/Moscow или +03:00")
+		}
+		user.Timezone = text
+		updated, err := b.users.UpdateUser(user)
+		if err != nil {
+			return err
+		}
+		_ = updated
+		session.State = domain.SessionStateIdle
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		return b.sendMenuText(ctx, msg.Chat.ID, "Таймзона сохранена.")
+	case domain.SessionStateSettingsRemind:
+		dur, err := parseIntervalInput(text)
+		if err != nil || dur <= 0 {
+			return b.sendMenuText(ctx, msg.Chat.ID, intervalHint())
+		}
+		user.DefaultRemindKind = "interval"
+		user.DefaultRemindInterval = dur.String()
+		updated, err := b.users.UpdateUser(user)
+		if err != nil {
+			return err
+		}
+		_ = updated
+		session.State = domain.SessionStateIdle
+		if err := b.saveSession(session, draft); err != nil {
+			return err
+		}
+		return b.sendMenuText(ctx, msg.Chat.ID, "Сохранил дефолтные напоминания.")
+	default:
+		return nil
+	}
+}
+
 func (b *Bot) runNotifier(ctx context.Context) {
 	ticker := time.NewTicker(b.notifyEvery)
 	defer ticker.Stop()
@@ -388,4 +598,10 @@ func toTaskInLocation(t domain.Task, loc *time.Location) domain.Task {
 		t.NotifiedAt = &tt
 	}
 	return t
+}
+
+func isSameDay(a, b time.Time) bool {
+	y1, m1, d1 := a.Date()
+	y2, m2, d2 := b.Date()
+	return y1 == y2 && m1 == m2 && d1 == d2
 }

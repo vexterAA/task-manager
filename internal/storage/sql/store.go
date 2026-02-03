@@ -67,7 +67,7 @@ func (s *Store) ListUsers() ([]domain.User, error) {
 		return nil, errors.New("db")
 	}
 	rows, err := s.db.Query(`
-		select id, telegram_user_id, chat_id, timezone, created_at
+		select id, telegram_user_id, chat_id, timezone, default_remind_kind, default_remind_interval, created_at
 		from users
 		order by id`,
 	)
@@ -78,7 +78,7 @@ func (s *Store) ListUsers() ([]domain.User, error) {
 	var res []domain.User
 	for rows.Next() {
 		var u domain.User
-		if err := rows.Scan(&u.ID, &u.TelegramUserID, &u.ChatID, &u.Timezone, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.TelegramUserID, &u.ChatID, &u.Timezone, &u.DefaultRemindKind, &u.DefaultRemindInterval, &u.CreatedAt); err != nil {
 			return nil, err
 		}
 		res = append(res, u)
@@ -94,12 +94,14 @@ func (s *Store) CreateUser(u domain.User) (domain.User, error) {
 		u.Timezone = "UTC"
 	}
 	row := s.db.QueryRow(`
-		insert into users(telegram_user_id, chat_id, timezone)
-		values ($1, $2, $3)
+		insert into users(telegram_user_id, chat_id, timezone, default_remind_kind, default_remind_interval)
+		values ($1, $2, $3, $4, $5)
 		returning id, created_at`,
 		u.TelegramUserID,
 		u.ChatID,
 		u.Timezone,
+		u.DefaultRemindKind,
+		u.DefaultRemindInterval,
 	)
 	if err := row.Scan(&u.ID, &u.CreatedAt); err != nil {
 		return domain.User{}, err
@@ -113,12 +115,12 @@ func (s *Store) GetByTelegramID(telegramUserID int64) (domain.User, error) {
 	}
 	var u domain.User
 	row := s.db.QueryRow(`
-		select id, telegram_user_id, chat_id, timezone, created_at
+		select id, telegram_user_id, chat_id, timezone, default_remind_kind, default_remind_interval, created_at
 		from users
 		where telegram_user_id = $1`,
 		telegramUserID,
 	)
-	if err := row.Scan(&u.ID, &u.TelegramUserID, &u.ChatID, &u.Timezone, &u.CreatedAt); err != nil {
+	if err := row.Scan(&u.ID, &u.TelegramUserID, &u.ChatID, &u.Timezone, &u.DefaultRemindKind, &u.DefaultRemindInterval, &u.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.User{}, storage.ErrNotFound
 		}
@@ -133,12 +135,39 @@ func (s *Store) GetUserByID(id int64) (domain.User, error) {
 	}
 	var u domain.User
 	row := s.db.QueryRow(`
-		select id, telegram_user_id, chat_id, timezone, created_at
+		select id, telegram_user_id, chat_id, timezone, default_remind_kind, default_remind_interval, created_at
 		from users
 		where id = $1`,
 		id,
 	)
-	if err := row.Scan(&u.ID, &u.TelegramUserID, &u.ChatID, &u.Timezone, &u.CreatedAt); err != nil {
+	if err := row.Scan(&u.ID, &u.TelegramUserID, &u.ChatID, &u.Timezone, &u.DefaultRemindKind, &u.DefaultRemindInterval, &u.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.User{}, storage.ErrNotFound
+		}
+		return domain.User{}, err
+	}
+	return u, nil
+}
+
+func (s *Store) UpdateUser(u domain.User) (domain.User, error) {
+	if s.db == nil {
+		return domain.User{}, errors.New("db")
+	}
+	row := s.db.QueryRow(`
+		update users
+		set chat_id = $1,
+			timezone = $2,
+			default_remind_kind = $3,
+			default_remind_interval = $4
+		where id = $5
+		returning id, telegram_user_id, chat_id, timezone, default_remind_kind, default_remind_interval, created_at`,
+		u.ChatID,
+		u.Timezone,
+		u.DefaultRemindKind,
+		u.DefaultRemindInterval,
+		u.ID,
+	)
+	if err := row.Scan(&u.ID, &u.TelegramUserID, &u.ChatID, &u.Timezone, &u.DefaultRemindKind, &u.DefaultRemindInterval, &u.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.User{}, storage.ErrNotFound
 		}

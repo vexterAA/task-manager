@@ -6,4 +6,5 @@ type UserRepository interface {
 	GetByTelegramID(telegramUserID int64) (domain.User, error)
 	GetUserByID(id int64) (domain.User, error)
 	CreateUser(user domain.User) (domain.User, error)
+	UpdateUser(user domain.User) (domain.User, error)
 }

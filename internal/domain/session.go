@@ -11,6 +11,9 @@ const (
 	SessionStateCreateConfirm  = "CREATE_CONFIRM"
 	SessionStateCreateEdit     = "CREATE_EDIT"
 	SessionStatePickTask       = "PICK_TASK"
+	SessionStateSettingsMenu   = "SETTINGS_MENU"
+	SessionStateSettingsTZ     = "SETTINGS_TZ"
+	SessionStateSettingsRemind = "SETTINGS_REMIND"
 )
 
 type UserSession struct {

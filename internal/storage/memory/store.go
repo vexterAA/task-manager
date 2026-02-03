@@ -56,6 +56,16 @@ func (s *Store) CreateUser(u domain.User) (domain.User, error) {
 	return u, nil
 }
 
+func (s *Store) UpdateUser(u domain.User) (domain.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.users[u.ID]; !ok {
+		return domain.User{}, storage.ErrNotFound
+	}
+	s.users[u.ID] = u
+	return u, nil
+}
+
 func (s *Store) GetByTelegramID(telegramUserID int64) (domain.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
